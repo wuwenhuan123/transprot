@@ -1,14 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
 
 from transprot.core.config import AppConfigStore, resolve_config_path, resolve_log_dir
 
 
 def _dependency_state() -> dict[str, bool]:
-    modules = ["PySide6", "PIL", "paddleocr"]
+    modules = ["PySide6", "PIL", "paddle", "paddleocr"]
     return {name: importlib.util.find_spec(name) is not None for name in modules}
 
 
@@ -29,4 +28,3 @@ def run_self_check() -> None:
         "model": config.model,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-

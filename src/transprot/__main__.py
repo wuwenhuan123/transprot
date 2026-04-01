@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import sys
@@ -7,7 +7,7 @@ from transprot.cli import run_self_check
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="TransProt screen translator.")
+    parser = argparse.ArgumentParser(description="TransProt screen OCR utility.")
     parser.add_argument(
         "--self-check",
         action="store_true",
@@ -36,4 +36,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

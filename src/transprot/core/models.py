@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -7,6 +7,38 @@ from enum import Enum
 class TranslationProvider(str, Enum):
     OPENAI_COMPATIBLE = "openai_compatible"
     BASIC_HTTP = "basic_http"
+
+
+@dataclass(slots=True)
+class CaptureRegion:
+    screen_name: str
+    x: int
+    y: int
+    width: int
+    height: int
+
+    @property
+    def rect(self) -> tuple[int, int, int, int]:
+        return self.x, self.y, self.width, self.height
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "screen_name": self.screen_name,
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "CaptureRegion":
+        return cls(
+            screen_name=str(payload.get("screen_name", "")),
+            x=int(payload.get("x", 0)),
+            y=int(payload.get("y", 0)),
+            width=int(payload.get("width", 0)),
+            height=int(payload.get("height", 0)),
+        )
 
 
 @dataclass(slots=True)
@@ -20,15 +52,20 @@ class AppConfig:
     log_level: str = "INFO"
     source_lang: str = "auto"
     target_lang: str = "zh-CN"
+    capture_region: CaptureRegion | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["translation_provider"] = self.translation_provider.value
+        payload["capture_region"] = (
+            self.capture_region.to_dict() if self.capture_region is not None else None
+        )
         return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> "AppConfig":
         provider = payload.get("translation_provider", TranslationProvider.OPENAI_COMPATIBLE.value)
+        capture_region_payload = payload.get("capture_region")
         return cls(
             hotkey=str(payload.get("hotkey", cls.hotkey)),
             translation_provider=TranslationProvider(str(provider)),
@@ -39,6 +76,11 @@ class AppConfig:
             log_level=str(payload.get("log_level", "INFO")),
             source_lang=str(payload.get("source_lang", "auto")),
             target_lang=str(payload.get("target_lang", "zh-CN")),
+            capture_region=(
+                CaptureRegion.from_dict(capture_region_payload)
+                if isinstance(capture_region_payload, dict)
+                else None
+            ),
         )
 
 
@@ -76,4 +118,3 @@ class TranslationResult:
     translated_text: str
     provider: str
     latency_ms: int
-

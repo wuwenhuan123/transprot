@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 import time
@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtGui import QGuiApplication
 
-from transprot.core.models import SelectionRegion
+from transprot.core.models import CaptureRegion, SelectionRegion
 from transprot.infra.image_preprocess import preprocess_capture
 
 
@@ -15,7 +15,7 @@ class ScreenshotService:
         self._temp_dir = temp_dir or Path(tempfile.gettempdir()) / "transprot"
         self._temp_dir.mkdir(parents=True, exist_ok=True)
 
-    def capture(self, region: SelectionRegion) -> Path:
+    def capture(self, region: CaptureRegion | SelectionRegion) -> Path:
         app = QGuiApplication.instance()
         if app is None:
             raise RuntimeError("QGuiApplication is not initialized.")

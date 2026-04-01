@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from transprot.core.config import AppConfigStore
-from transprot.core.models import AppConfig, TranslationProvider
+from transprot.core.models import AppConfig, CaptureRegion, TranslationProvider
 
 
 class ConfigStoreTests(unittest.TestCase):
@@ -23,6 +23,13 @@ class ConfigStoreTests(unittest.TestCase):
             api_key="secret",
             model="",
             timeout_sec=45,
+            capture_region=CaptureRegion(
+                screen_name="Display-1",
+                x=120,
+                y=80,
+                width=640,
+                height=280,
+            ),
         )
         store.save(config)
         loaded = store.load()
@@ -31,6 +38,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(loaded.translation_provider, TranslationProvider.BASIC_HTTP)
         self.assertEqual(loaded.api_base_url, "https://example.com/translate")
         self.assertEqual(loaded.timeout_sec, 45)
+        self.assertEqual(loaded.capture_region, config.capture_region)
 
         if config_path.exists():
             config_path.unlink()
