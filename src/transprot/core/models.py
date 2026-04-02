@@ -1,7 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+
+_DEFAULT_HOTKEY = "Ctrl+Alt+T"
+_DEFAULT_BAILIAN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_DEFAULT_BAILIAN_MODEL = "qwen-mt-flash"
+_DEFAULT_TIMEOUT_SEC = 60
+_DEFAULT_LOG_LEVEL = "INFO"
+_DEFAULT_SOURCE_LANG = "auto"
+_DEFAULT_TARGET_LANG = "zh-CN"
 
 
 class TranslationProvider(str, Enum):
@@ -43,15 +51,15 @@ class CaptureRegion:
 
 @dataclass(slots=True)
 class AppConfig:
-    hotkey: str = "Ctrl+Alt+T"
+    hotkey: str = _DEFAULT_HOTKEY
     translation_provider: TranslationProvider = TranslationProvider.OPENAI_COMPATIBLE
-    api_base_url: str = ""
+    api_base_url: str = _DEFAULT_BAILIAN_BASE_URL
     api_key: str = ""
-    model: str = ""
-    timeout_sec: int = 30
-    log_level: str = "INFO"
-    source_lang: str = "auto"
-    target_lang: str = "zh-CN"
+    model: str = _DEFAULT_BAILIAN_MODEL
+    timeout_sec: int = _DEFAULT_TIMEOUT_SEC
+    log_level: str = _DEFAULT_LOG_LEVEL
+    source_lang: str = _DEFAULT_SOURCE_LANG
+    target_lang: str = _DEFAULT_TARGET_LANG
     capture_region: CaptureRegion | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -67,15 +75,15 @@ class AppConfig:
         provider = payload.get("translation_provider", TranslationProvider.OPENAI_COMPATIBLE.value)
         capture_region_payload = payload.get("capture_region")
         return cls(
-            hotkey=str(payload.get("hotkey", cls.hotkey)),
+            hotkey=_coerce_string(payload.get("hotkey"), _DEFAULT_HOTKEY),
             translation_provider=TranslationProvider(str(provider)),
-            api_base_url=str(payload.get("api_base_url", "")),
-            api_key=str(payload.get("api_key", "")),
-            model=str(payload.get("model", "")),
-            timeout_sec=int(payload.get("timeout_sec", 30)),
-            log_level=str(payload.get("log_level", "INFO")),
-            source_lang=str(payload.get("source_lang", "auto")),
-            target_lang=str(payload.get("target_lang", "zh-CN")),
+            api_base_url=_coerce_string(payload.get("api_base_url"), _DEFAULT_BAILIAN_BASE_URL),
+            api_key=_coerce_string(payload.get("api_key"), ""),
+            model=_coerce_string(payload.get("model"), _DEFAULT_BAILIAN_MODEL),
+            timeout_sec=_coerce_int(payload.get("timeout_sec"), _DEFAULT_TIMEOUT_SEC),
+            log_level=_coerce_string(payload.get("log_level"), _DEFAULT_LOG_LEVEL),
+            source_lang=_coerce_string(payload.get("source_lang"), _DEFAULT_SOURCE_LANG),
+            target_lang=_coerce_string(payload.get("target_lang"), _DEFAULT_TARGET_LANG),
             capture_region=(
                 CaptureRegion.from_dict(capture_region_payload)
                 if isinstance(capture_region_payload, dict)
@@ -118,3 +126,21 @@ class TranslationResult:
     translated_text: str
     provider: str
     latency_ms: int
+
+
+def _coerce_string(value: object, default: str) -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text or text.startswith("<member '"):
+        return default
+    return text
+
+
+def _coerce_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+

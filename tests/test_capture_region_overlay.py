@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib.util
 import unittest
@@ -66,21 +66,18 @@ class CaptureRegionOverlayTests(unittest.TestCase):
         self.assertEqual(clear_calls, [])
         self.assertEqual(overlay._result_view.toPlainText(), "recognized text")
 
-    def test_overlay_uses_readable_chinese_labels(self) -> None:
+    def test_overlay_uses_expected_button_and_result_text(self) -> None:
         overlay = CaptureRegionOverlay(
             CaptureRegion(screen_name="Primary", x=100, y=120, width=420, height=180)
         )
 
-        self.assertEqual(
-            overlay._hint_label.text(),
-            "\u62d6\u52a8\u6216\u7f29\u653e\u8fd9\u4e2a\u533a\u57df\uff0c\u4f7f\u5b83\u8986\u76d6\u76ee\u6807\u6587\u5b57",
-        )
-        self.assertEqual(overlay._recognize_button.text(), "\u8bc6\u522b")
-        self.assertEqual(overlay._result_view.placeholderText(), "OCR \u8bc6\u522b\u7ed3\u679c")
+        self.assertEqual(overlay._recognize_button.text(), "翻译")
+        self.assertEqual(overlay._close_button.text(), "×")
+        self.assertEqual(overlay._result_view.placeholderText(), "翻译结果")
         overlay.set_busy(True)
-        self.assertEqual(overlay._recognize_button.text(), "\u8bc6\u522b\u4e2d...")
+        self.assertEqual(overlay._recognize_button.text(), "翻译中...")
 
-    def test_recognize_button_stays_outside_overlay(self) -> None:
+    def test_action_buttons_stay_outside_overlay(self) -> None:
         overlay = CaptureRegionOverlay(
             CaptureRegion(screen_name="Primary", x=160, y=180, width=420, height=180)
         )
@@ -89,8 +86,36 @@ class CaptureRegionOverlayTests(unittest.TestCase):
         self._app.processEvents()
 
         self.assertTrue(overlay._recognize_button.isVisible())
+        self.assertTrue(overlay._close_button.isVisible())
         self.assertFalse(overlay.geometry().intersects(overlay._recognize_button.geometry()))
-        self.assertGreaterEqual(overlay._recognize_button.geometry().right(), overlay.geometry().right() - 40)
+        self.assertFalse(overlay.geometry().intersects(overlay._close_button.geometry()))
+        self.assertGreater(overlay._close_button.geometry().left(), overlay._recognize_button.geometry().right())
+
+    def test_capture_region_matches_highlighted_inner_frame(self) -> None:
+        overlay = CaptureRegionOverlay(
+            CaptureRegion(screen_name="Primary", x=160, y=180, width=420, height=180)
+        )
+
+        frame_region = overlay.current_region()
+        capture_region = overlay.current_capture_region()
+
+        self.assertEqual(capture_region.screen_name, frame_region.screen_name)
+        self.assertEqual(capture_region.x, frame_region.x + 4)
+        self.assertEqual(capture_region.y, frame_region.y + 4)
+        self.assertEqual(capture_region.width, frame_region.width - 8)
+        self.assertEqual(capture_region.height, frame_region.height - 8)
+
+    def test_close_button_emits_hide_requested(self) -> None:
+        overlay = CaptureRegionOverlay(
+            CaptureRegion(screen_name="Primary", x=160, y=180, width=420, height=180)
+        )
+        calls: list[str] = []
+        overlay.hide_requested.connect(lambda: calls.append("hide"))
+
+        overlay._close_button.click()
+        self._app.processEvents()
+
+        self.assertEqual(calls, ["hide"])
 
 
 if __name__ == "__main__":

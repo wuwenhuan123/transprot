@@ -6,11 +6,12 @@ from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import patch
 
-from transprot.core.models import CaptureRegion, OCRResult
+from transprot.core.models import AppConfig, CaptureRegion, OCRResult, TranslationResult
 
 _PYSIDE6_AVAILABLE = importlib.util.find_spec("PySide6") is not None
 if _PYSIDE6_AVAILABLE:
     from PySide6.QtCore import QCoreApplication
+
     from transprot.core.ocr_coordinator import OCRCoordinator
 else:
     QCoreApplication = None
@@ -52,13 +53,32 @@ class _FakeOCRService:
         return OCRResult(full_text=self._result_text)
 
 
+class _FakeTranslatorRouter:
+    def __init__(self, events: list[str], translated_text: str) -> None:
+        self._events = events
+        self._translated_text = translated_text
+
+    def translate_stream(self, text: str, config: AppConfig, on_progress=None) -> TranslationResult:
+        self._events.append("translate")
+        if on_progress is not None:
+            midpoint = max(1, len(self._translated_text) // 2)
+            on_progress(self._translated_text[:midpoint])
+            on_progress(self._translated_text)
+        return TranslationResult(
+            source_text=text,
+            translated_text=self._translated_text,
+            provider=config.translation_provider.value,
+            latency_ms=12,
+        )
+
+
 @unittest.skipUnless(_PYSIDE6_AVAILABLE, "PySide6 is required for OCR coordinator signal tests.")
 class OCRCoordinatorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._app = QCoreApplication.instance() or QCoreApplication([])
 
-    def test_recognize_region_hides_before_capture_and_returns_ocr_result(self) -> None:
+    def test_recognize_region_returns_ocr_result_without_translator(self) -> None:
         events: list[str] = []
         statuses: list[str] = []
         results: list[tuple[CaptureRegion, OCRResult]] = []
@@ -85,7 +105,41 @@ class OCRCoordinatorTests(unittest.TestCase):
         self.assertEqual(results[0][0], region)
         self.assertEqual(results[0][1].full_text, "recognized text")
         self.assertEqual(statuses, ["capturing", "recognizing", "completed"])
-        self.assertFalse(hasattr(coordinator, "_translator_router"))
+
+    def test_recognize_region_runs_translation_pipeline(self) -> None:
+        events: list[str] = []
+        statuses: list[str] = []
+        progress: list[str] = []
+        translations: list[tuple[CaptureRegion, TranslationResult]] = []
+        region = CaptureRegion(screen_name="Primary", x=100, y=120, width=420, height=180)
+        coordinator = OCRCoordinator(
+            screenshot_service=_FakeScreenshotService(events),
+            ocr_service=_FakeOCRService(events, "recognized text"),
+            translator_router=_FakeTranslatorRouter(events, "\u7ffb\u8bd1\u7ed3\u679c"),
+            config_supplier=lambda: AppConfig(),
+            capture_delay_ms=0,
+        )
+        coordinator._executor = _ImmediateExecutor()
+        coordinator.capture_started.connect(lambda emitted_region: events.append("capture_started"))
+        coordinator.translation_progress.connect(lambda emitted_region, text: progress.append(text))
+        coordinator.translation_ready.connect(
+            lambda emitted_region, result: translations.append((emitted_region, result))
+        )
+        coordinator.translation_ready.connect(lambda emitted_region, result: events.append("translation_ready"))
+        coordinator.session_finished.connect(lambda: events.append("finished"))
+        coordinator.status_changed.connect(statuses.append)
+
+        with patch("transprot.core.ocr_coordinator.QTimer.singleShot", side_effect=lambda delay, fn: fn()):
+            coordinator.recognize_region(region)
+            self._app.processEvents()
+
+        self.assertEqual(events[:4], ["capture_started", "capture", "ocr", "translate"])
+        self.assertEqual(progress, ["\u7ffb\u8bd1", "\u7ffb\u8bd1\u7ed3\u679c"])
+        self.assertIn("translation_ready", events)
+        self.assertIn("finished", events)
+        self.assertEqual(translations[0][0], region)
+        self.assertEqual(translations[0][1].translated_text, "\u7ffb\u8bd1\u7ed3\u679c")
+        self.assertEqual(statuses, ["capturing", "recognizing", "translating", "completed"])
 
     def test_recognize_region_surfaces_blank_ocr_as_error(self) -> None:
         events: list[str] = []
@@ -108,7 +162,7 @@ class OCRCoordinatorTests(unittest.TestCase):
             self._app.processEvents()
 
         self.assertEqual(events[:3], ["capture_started", "capture", "ocr"])
-        self.assertEqual(errors, ["当前区域没有识别到可用文字。"])
+        self.assertEqual(errors, ["\u5f53\u524d\u533a\u57df\u6ca1\u6709\u8bc6\u522b\u5230\u53ef\u7528\u6587\u5b57\u3002"])
         self.assertIn("finished", events)
         self.assertEqual(statuses, ["capturing", "recognizing", "error"])
 

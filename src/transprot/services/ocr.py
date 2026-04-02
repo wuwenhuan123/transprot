@@ -25,7 +25,13 @@ _DEFAULT_UNAVAILABLE_MESSAGE = (
     "\u6216\u8bbe\u7f6e `TRANSPROT_FAKE_OCR_TEXT` \u8fdb\u5165\u6f14\u793a\u6a21\u5f0f\u3002"
 )
 _FAST_MODEL_PROFILE = "ppocr-v4-mobile"
+_WIDE_MOBILE_PROFILE = "ppocr-v4-mobile-wide"
 _SERVER_FALLBACK_PROFILE = "ppocr-v5-server"
+_FAST_MODEL_LIMIT_SIDE_LEN = 640
+_WIDE_MODEL_LIMIT_SIDE_LEN = 2048
+_WIDE_IMAGE_MIN_WIDTH = 1800
+_WIDE_IMAGE_MIN_RATIO = 5.0
+_WIDE_IMAGE_MIN_TIMEOUT_SEC = 60
 _DEFAULT_REQUEST_TIMEOUT_SEC = 12
 _DEFAULT_WARMUP_TIMEOUT_SEC = 180
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -97,6 +103,33 @@ def _configured_timeout(name: str, fallback: int) -> int:
     except ValueError:
         logger.warning("Ignoring invalid timeout override. %s=%s", name, raw_value)
         return fallback
+
+
+def _load_image_size(image_path: Path) -> tuple[int, int]:
+    if importlib.util.find_spec("PIL") is None:
+        return 0, 0
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        logger.debug("Unable to read OCR image size. image_path=%s", image_path, exc_info=True)
+        return 0, 0
+
+
+def _is_wide_text_image(image_size: tuple[int, int]) -> bool:
+    width, height = image_size
+    if width <= 0 or height <= 0:
+        return False
+    return width >= _WIDE_IMAGE_MIN_WIDTH and (width / max(height, 1)) >= _WIDE_IMAGE_MIN_RATIO
+
+
+def _recognize_timeout_for_image(image_path: Path, timeout_sec: int) -> int:
+    image_size = _load_image_size(image_path)
+    if _is_wide_text_image(image_size):
+        return max(timeout_sec, _WIDE_IMAGE_MIN_TIMEOUT_SEC)
+    return timeout_sec
 
 
 def paddleocr_available() -> bool:
@@ -180,7 +213,7 @@ class PaddleOCRService(BaseOCRService):
 
     def __init__(self) -> None:
         _configure_paddle_environment()
-        self._engine: Any | None = None
+        self._engines: dict[str, Any] = {}
         self._engine_profile = "uninitialized"
         self._lock = Lock()
 
@@ -189,7 +222,7 @@ class PaddleOCRService(BaseOCRService):
         return self._engine_profile
 
     def warmup(self) -> None:
-        self._get_engine()
+        self._get_engine(_FAST_MODEL_PROFILE)
 
     def _engine_profiles(self) -> list[tuple[str, dict[str, Any]]]:
         base_options = {
@@ -207,7 +240,18 @@ class PaddleOCRService(BaseOCRService):
                     "lang": "ch",
                     "text_detection_model_name": "PP-OCRv4_mobile_det",
                     "text_recognition_model_name": "PP-OCRv4_mobile_rec",
-                    "text_det_limit_side_len": 640,
+                    "text_det_limit_side_len": _FAST_MODEL_LIMIT_SIDE_LEN,
+                    "text_det_limit_type": "max",
+                },
+            ),
+            (
+                _WIDE_MOBILE_PROFILE,
+                {
+                    **base_options,
+                    "lang": "ch",
+                    "text_detection_model_name": "PP-OCRv4_mobile_det",
+                    "text_recognition_model_name": "PP-OCRv4_mobile_rec",
+                    "text_det_limit_side_len": _WIDE_MODEL_LIMIT_SIDE_LEN,
                     "text_det_limit_type": "max",
                 },
             ),
@@ -220,53 +264,149 @@ class PaddleOCRService(BaseOCRService):
             ),
         ]
 
-    def _get_engine(self) -> Any:
-        if self._engine is not None:
-            return self._engine
-        with self._lock:
-            if self._engine is None:
-                self._engine = self._build_engine()
-        return self._engine
+    def recognize(self, image_path: Path) -> OCRResult:
+        image_size = _load_image_size(image_path)
+        best_result: OCRResult | None = None
+        last_error: Exception | None = None
+        attempted_profiles: list[str] = []
 
-    def _build_engine(self) -> Any:
+        for profile_name in self._recognition_profile_order(image_size):
+            attempted_profiles.append(profile_name)
+            try:
+                candidate = self._recognize_with_profile(profile_name, image_path, image_size)
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "OCR recognition attempt failed. profile=%s image_path=%s error=%s",
+                    profile_name,
+                    image_path,
+                    exc,
+                )
+                continue
+
+            if best_result is None or self._result_score(candidate, image_size) > self._result_score(best_result, image_size):
+                best_result = candidate
+
+            if not self._should_retry_with_fallback(candidate, image_size, profile_name):
+                logger.info(
+                    "OCR recognition settled. profile=%s attempts=%s chars=%s lines=%s image_size=%s",
+                    profile_name,
+                    attempted_profiles,
+                    len(candidate.full_text.strip()),
+                    len(candidate.lines),
+                    image_size,
+                )
+                return candidate
+
+            logger.info(
+                "OCR result looks suspicious, retrying with fallback. profile=%s chars=%s lines=%s image_size=%s",
+                profile_name,
+                len(candidate.full_text.strip()),
+                len(candidate.lines),
+                image_size,
+            )
+
+        if best_result is not None:
+            logger.info(
+                "OCR returning best available fallback result. attempts=%s chars=%s lines=%s image_size=%s",
+                attempted_profiles,
+                len(best_result.full_text.strip()),
+                len(best_result.lines),
+                image_size,
+            )
+            return best_result
+        if last_error is not None:
+            raise last_error
+        return OCRResult(full_text="", provider=self.provider_name, image_size=image_size)
+
+    def _recognition_profile_order(self, image_size: tuple[int, int]) -> list[str]:
+        if _is_wide_text_image(image_size):
+            return [_WIDE_MOBILE_PROFILE, _SERVER_FALLBACK_PROFILE]
+        return [_FAST_MODEL_PROFILE, _SERVER_FALLBACK_PROFILE]
+
+    def _recognize_with_profile(
+        self,
+        profile_name: str,
+        image_path: Path,
+        image_size: tuple[int, int],
+    ) -> OCRResult:
+        engine = self._get_engine(profile_name)
+        raw = self._run_engine(engine, image_path)
+        lines = self._extract_lines(raw)
+        result = OCRResult(
+            full_text=merge_ocr_lines(line.text for line in lines),
+            lines=lines,
+            image_size=image_size,
+            provider=self.provider_name,
+        )
+        self._engine_profile = profile_name
+        return result
+
+    def _get_engine(self, profile_name: str) -> Any:
+        engine = self._engines.get(profile_name)
+        if engine is not None:
+            return engine
+        with self._lock:
+            engine = self._engines.get(profile_name)
+            if engine is None:
+                engine = self._build_engine(profile_name)
+                self._engines[profile_name] = engine
+        return engine
+
+    def _build_engine(self, requested_profile_name: str) -> Any:
         try:
             from paddleocr import PaddleOCR
         except ModuleNotFoundError as exc:
             raise OCRUnavailableError(_missing_dependency_message(exc.name)) from exc
         except Exception as exc:
-            raise OCRUnavailableError(f"Paddle OCR \u8fd0\u884c\u73af\u5883\u521d\u59cb\u5316\u5931\u8d25\uff1a{exc}") from exc
+            raise OCRUnavailableError(f"Paddle OCR ??????????{exc}") from exc
 
-        errors: list[str] = []
-        for profile_name, profile_options in self._engine_profiles():
-            try:
-                engine = PaddleOCR(**profile_options)
-            except ModuleNotFoundError as exc:
-                raise OCRUnavailableError(_missing_dependency_message(exc.name)) from exc
-            except Exception as exc:
-                logger.warning(
-                    "Paddle OCR engine candidate failed. profile=%s error=%s",
-                    profile_name,
-                    exc,
-                )
-                errors.append(f"{profile_name}: {exc}")
-                continue
+        profiles = {name: options for name, options in self._engine_profiles()}
+        profile_options = profiles.get(requested_profile_name)
+        if profile_options is None:
+            raise OCRUnavailableError(f"??? OCR ?????{requested_profile_name}")
 
-            self._engine_profile = profile_name
-            logger.info("Initialized Paddle OCR engine. profile=%s", profile_name)
-            return engine
+        try:
+            engine = PaddleOCR(**profile_options)
+        except ModuleNotFoundError as exc:
+            raise OCRUnavailableError(_missing_dependency_message(exc.name)) from exc
+        except Exception as exc:
+            logger.warning(
+                "Paddle OCR engine candidate failed. profile=%s error=%s",
+                requested_profile_name,
+                exc,
+            )
+            raise OCRUnavailableError(f"{requested_profile_name}: {exc}") from exc
 
-        detail = " | ".join(errors[-2:]) or "unknown error"
-        raise OCRUnavailableError(f"Paddle OCR \u5f15\u64ce\u521d\u59cb\u5316\u5931\u8d25\uff1a{detail}")
+        logger.info("Initialized Paddle OCR engine. profile=%s", requested_profile_name)
+        return engine
 
-    def recognize(self, image_path: Path) -> OCRResult:
-        engine = self._get_engine()
-        raw = self._run_engine(engine, image_path)
-        lines = self._extract_lines(raw)
-        return OCRResult(
-            full_text=merge_ocr_lines(line.text for line in lines),
-            lines=lines,
-            provider=self.provider_name,
-        )
+    def _should_retry_with_fallback(
+        self,
+        result: OCRResult,
+        image_size: tuple[int, int],
+        profile_name: str,
+    ) -> bool:
+        if profile_name == _SERVER_FALLBACK_PROFILE:
+            return False
+        if not result.full_text.strip():
+            return True
+        if not _is_wide_text_image(image_size):
+            return False
+
+        width = image_size[0]
+        max_line_width = max((line.bbox[2] for line in result.lines), default=0)
+        coverage = (max_line_width / width) if width else 0.0
+        text_length = len(result.full_text.strip())
+        line_count = len(result.lines)
+        return text_length < 24 or line_count < 2 or coverage < 0.35
+
+    @staticmethod
+    def _result_score(result: OCRResult, image_size: tuple[int, int]) -> tuple[int, int, float]:
+        width = image_size[0]
+        max_line_width = max((line.bbox[2] for line in result.lines), default=0)
+        coverage = (max_line_width / width) if width else 0.0
+        return len(result.full_text.strip()), len(result.lines), coverage
 
     def _run_engine(self, engine: Any, image_path: Path) -> Any:
         image_arg = str(image_path)
@@ -283,7 +423,7 @@ class PaddleOCRService(BaseOCRService):
                     raise
                 return legacy_ocr(image_arg)
 
-        raise OCRUnavailableError("\u5f53\u524d Paddle OCR \u5f15\u64ce\u4e0d\u652f\u6301\u53ef\u7528\u7684\u8bc6\u522b\u63a5\u53e3\u3002")
+        raise OCRUnavailableError("?? Paddle OCR ?????????????")
 
     def _extract_lines(self, payload: Any) -> list[OCRLine]:
         extracted: list[OCRLine] = []
@@ -393,9 +533,10 @@ class SubprocessOCRService(BaseOCRService):
         self._stop_worker("OCR worker \u5df2\u5173\u95ed\u3002")
 
     def recognize(self, image_path: Path) -> OCRResult:
+        timeout_sec = _recognize_timeout_for_image(image_path, self._timeout_sec)
         payload = self._send_request(
             "recognize",
-            timeout_sec=self._timeout_sec,
+            timeout_sec=timeout_sec,
             image_path=str(image_path),
         )
         result_payload = payload.get("result")

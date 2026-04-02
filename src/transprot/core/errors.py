@@ -1,21 +1,21 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 
 class TransProtError(RuntimeError):
-    """Base application error."""
+    """应用基础异常。"""
 
 
 class ConfigurationError(TransProtError):
-    """Raised when config is invalid."""
+    """配置无效时抛出。"""
 
 
 class OCRUnavailableError(TransProtError):
-    """Raised when OCR dependencies are unavailable."""
+    """OCR 依赖或运行环境不可用时抛出。"""
 
 
 class TranslationError(TransProtError):
-    """Raised when translation fails."""
+    """翻译失败时抛出。"""
 
 
 class HotkeyError(TransProtError):
-    """Raised when hotkey registration fails."""
+    """热键注册失败时抛出。"""

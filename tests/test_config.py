@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import unittest
 from pathlib import Path
@@ -37,12 +37,27 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(loaded.hotkey, "Ctrl+Shift+T")
         self.assertEqual(loaded.translation_provider, TranslationProvider.BASIC_HTTP)
         self.assertEqual(loaded.api_base_url, "https://example.com/translate")
+        self.assertEqual(loaded.api_key, "secret")
         self.assertEqual(loaded.timeout_sec, 45)
         self.assertEqual(loaded.capture_region, config.capture_region)
 
         if config_path.exists():
             config_path.unlink()
 
+    def test_from_dict_recovers_from_member_descriptor_strings(self) -> None:
+        loaded = AppConfig.from_dict(
+            {
+                "hotkey": "<member 'hotkey' of 'AppConfig' objects>",
+                "api_base_url": "<member 'api_base_url' of 'AppConfig' objects>",
+                "model": "<member 'model' of 'AppConfig' objects>",
+            }
+        )
+
+        self.assertEqual(loaded.hotkey, "Ctrl+Alt+T")
+        self.assertEqual(loaded.api_base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        self.assertEqual(loaded.model, "qwen-mt-flash")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -24,6 +24,10 @@ def resolve_log_dir() -> Path:
     return _resolve_windows_dir("LOCALAPPDATA", "AppData/Local") / APP_NAME / "logs"
 
 
+def resolve_debug_capture_dir() -> Path:
+    return _resolve_windows_dir("LOCALAPPDATA", "AppData/Local") / APP_NAME / "debug-captures"
+
+
 class AppConfigStore:
     def __init__(self, config_path: Path | None = None) -> None:
         self._config_path = config_path or resolve_config_path()
@@ -44,4 +48,3 @@ class AppConfigStore:
             json.dumps(config.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-
