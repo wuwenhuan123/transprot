@@ -50,6 +50,16 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(region.width, 480)
         self.assertEqual(region.height, 240)
 
+    def test_clamp_capture_region_allows_very_small_region(self) -> None:
+        region = clamp_capture_region(
+            CaptureRegion(screen_name="Primary", x=10, y=12, width=6, height=5),
+            (0, 0, 800, 600),
+        )
+        self.assertEqual(region.x, 10)
+        self.assertEqual(region.y, 12)
+        self.assertEqual(region.width, 6)
+        self.assertEqual(region.height, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

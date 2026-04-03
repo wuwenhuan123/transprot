@@ -6,7 +6,7 @@ from transprot.core.models import CaptureRegion
 
 ScreenRect = tuple[int, int, int, int]
 DEFAULT_CAPTURE_SIZE = (480, 240)
-MIN_CAPTURE_SIZE = (240, 120)
+MIN_CAPTURE_SIZE = (1, 1)
 
 
 def compute_overlay_rect(

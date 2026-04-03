@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib.util
 import types
@@ -25,6 +25,7 @@ class _FakeOverlay:
         self.results: list[tuple[str, bool]] = []
         self.hidden = False
         self.busy_states: list[bool] = []
+        self.statuses: list[str] = []
         self.cleared = False
         self.frame_region = CaptureRegion(screen_name="Primary", x=100, y=120, width=420, height=180)
         self.capture_region = CaptureRegion(screen_name="Primary", x=104, y=124, width=412, height=172)
@@ -50,8 +51,16 @@ class _FakeOverlay:
     def set_busy(self, busy: bool) -> None:
         self.busy_states.append(busy)
 
+    def set_status(self, status: str) -> None:
+        self.statuses.append(status)
+
     def hide(self) -> None:
         self.hidden = True
+
+    def reset_to_idle(self) -> None:
+        self.cleared = True
+        self.busy_states.append(False)
+        self.statuses.append("ready")
 
 
 class _FakeTray:
@@ -125,7 +134,7 @@ class AppBehaviorTests(unittest.TestCase):
         region = CaptureRegion(screen_name="Primary", x=100, y=120, width=420, height=180)
         translation = TranslationResult(
             source_text="hello",
-            translated_text="\u4f60\u597d",
+            translated_text="你好",
             provider="openai_compatible",
             latency_ms=12,
         )
@@ -134,7 +143,7 @@ class AppBehaviorTests(unittest.TestCase):
 
         self.assertEqual(overlay.applied_regions, [])
         self.assertEqual(overlay.show_region_calls, 1)
-        self.assertEqual(overlay.results, [("\u4f60\u597d", False)])
+        self.assertEqual(overlay.results, [("你好", False)])
 
     def test_translation_progress_updates_overlay_text(self) -> None:
         overlay = _FakeOverlay()
@@ -144,9 +153,9 @@ class AppBehaviorTests(unittest.TestCase):
         )
         region = CaptureRegion(screen_name="Primary", x=100, y=120, width=420, height=180)
 
-        TransProtDesktopApp._on_translation_progress(controller, region, "\u6b63\u5728\u7ffb\u8bd1")
+        TransProtDesktopApp._on_translation_progress(controller, region, "正在翻译")
 
-        self.assertEqual(overlay.results, [("\u6b63\u5728\u7ffb\u8bd1", False)])
+        self.assertEqual(overlay.results, [("正在翻译", False)])
 
     def test_minimize_capture_region_to_tray_hides_overlay_without_notification(self) -> None:
         overlay = _FakeOverlay()
@@ -164,6 +173,23 @@ class AppBehaviorTests(unittest.TestCase):
         self.assertTrue(overlay.hidden)
         self.assertEqual(overlay.busy_states[-1], False)
         self.assertEqual(tray.messages, [])
+
+    def test_clear_translation_result_resets_overlay_and_tooltip(self) -> None:
+        overlay = _FakeOverlay()
+        tray = _FakeTray()
+        controller = types.SimpleNamespace(
+            _capture_overlay=overlay,
+            _tray=tray,
+            _current_status="completed",
+        )
+
+        TransProtDesktopApp._clear_translation_result(controller)
+
+        self.assertEqual(controller._current_status, "ready")
+        self.assertTrue(overlay.cleared)
+        self.assertEqual(overlay.busy_states[-1], False)
+        self.assertEqual(overlay.statuses[-1], "ready")
+        self.assertEqual(tray.tooltips[-1], "TransProt - \u5c31\u7eea")
 
     def test_tray_click_shows_capture_region(self) -> None:
         calls: list[str] = []
@@ -187,13 +213,15 @@ class AppBehaviorTests(unittest.TestCase):
 
         self.assertEqual(calls, ["show"])
 
-    def test_status_tooltip_uses_chinese_text(self) -> None:
+    def test_status_tooltip_uses_chinese_text_and_updates_overlay(self) -> None:
         tray = _FakeTray()
-        controller = types.SimpleNamespace(_tray=tray)
+        overlay = _FakeOverlay()
+        controller = types.SimpleNamespace(_tray=tray, _capture_overlay=overlay)
 
         TransProtDesktopApp._on_status_changed(controller, "translating")
 
-        self.assertEqual(tray.tooltips[-1], "TransProt - \u7ffb\u8bd1\u4e2d")
+        self.assertEqual(tray.tooltips[-1], "TransProt - 翻译中")
+        self.assertEqual(overlay.statuses[-1], "translating")
 
 
 if __name__ == "__main__":

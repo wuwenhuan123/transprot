@@ -29,12 +29,14 @@ _NO_SCREEN_TEXT = "当前没有可用的屏幕。"
 _SETTINGS_SAVED_TEXT = "设置已保存。"
 _TRAY_TITLE_TEXT = "TransProt"
 _STATUS_TEXT = {
+    "ready": "就绪",
     "capturing": "截图中",
     "recognizing": "识别中",
     "translating": "翻译中",
     "completed": "已完成",
     "error": "出错",
 }
+_BUSY_STATUSES = {"capturing", "recognizing", "translating"}
 
 
 class TransProtDesktopApp(QObject):
@@ -44,6 +46,7 @@ class TransProtDesktopApp(QObject):
         self._config_store = AppConfigStore()
         self._config = self._config_store.load()
         self._log_path = configure_logging(self._config.log_level)
+        self._current_status = "ready"
         logger.info("Application initialized. log_path=%s", self._log_path)
 
         self._ocr_service = create_ocr_service()
@@ -73,7 +76,9 @@ class TransProtDesktopApp(QObject):
         self._capture_overlay.recognize_requested.connect(self.start_capture)
         self._capture_overlay.region_committed.connect(self._on_region_committed)
         self._capture_overlay.hide_requested.connect(self._minimize_capture_region_to_tray)
+        self._capture_overlay.clear_requested.connect(self._clear_translation_result)
         self._capture_overlay.show_region()
+        self._capture_overlay.set_status("ready")
 
         logger.info("Scheduling background OCR warmup")
         QTimer.singleShot(0, self._coordinator.warmup_ocr)
@@ -108,7 +113,8 @@ class TransProtDesktopApp(QObject):
         region = self._resolve_capture_region(self._capture_overlay.current_region())
         logger.info("Resolved capture region for show: %s", region)
         self._capture_overlay.apply_region(region)
-        self._capture_overlay.set_busy(False)
+        self._capture_overlay.set_busy(self._current_status in _BUSY_STATUSES)
+        self._capture_overlay.set_status(self._current_status)
         self._on_region_committed(region)
         self._capture_overlay.show_region()
         logger.info(
@@ -220,8 +226,16 @@ class TransProtDesktopApp(QObject):
         if not self._capture_overlay.isVisible() and not self._capture_overlay_hidden_by_user:
             self._capture_overlay.show_region()
 
+    def _clear_translation_result(self) -> None:
+        logger.info("Clear translation result requested")
+        self._current_status = "ready"
+        self._capture_overlay.reset_to_idle()
+        self._tray.setToolTip(f"{_TRAY_TITLE_TEXT} - {_STATUS_TEXT["ready"]}")
+
     def _on_status_changed(self, status: str) -> None:
         logger.info("Status changed: %s", status)
+        self._current_status = status
+        self._capture_overlay.set_status(status)
         self._tray.setToolTip(f"{_TRAY_TITLE_TEXT} - {_STATUS_TEXT.get(status, status)}")
 
     def _on_tray_activated(self, reason) -> None:
@@ -303,3 +317,4 @@ def launch_app() -> int:
     app.setProperty("transprot_controller", controller)
     app._transprot_controller = controller
     return app.exec()
+

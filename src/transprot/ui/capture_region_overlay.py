@@ -6,27 +6,52 @@ import sys
 from ctypes import wintypes
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent, QPen
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QMenu,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from transprot.core.layout import MIN_CAPTURE_SIZE, clamp_capture_region
 from transprot.core.models import CaptureRegion
 
 logger = logging.getLogger(__name__)
 
-_RESIZE_MARGIN = 10
+_RESIZE_MARGIN = 12
 _BUTTON_GAP = 10
 _BUTTON_ROW_SPACING = 8
-_RECOGNIZE_BUTTON_MIN_SIZE = QSize(96, 36)
-_CLOSE_BUTTON_MIN_SIZE = QSize(36, 36)
+_RECOGNIZE_BUTTON_MIN_SIZE = QSize(92, 36)
+_CLOSE_BUTTON_MIN_SIZE = QSize(34, 34)
 _RECOGNIZE_TEXT = "翻译"
-_RECOGNIZING_TEXT = "翻译中..."
 _CLOSE_TEXT = "×"
-_RESULT_PLACEHOLDER = "翻译结果"
-_FRAME_INSET = 2
+_CLEAR_RESULT_TEXT = "清除译文"
+_RESULT_PLACEHOLDER = "译文会显示在这里"
+_FRAME_INSET = 4
 _CAPTURE_INSET = 4
 _WDA_NONE = 0x0
 _WDA_EXCLUDEFROMCAPTURE = 0x11
+_STATUS_BORDER_COLORS = {
+    "ready": (94, 224, 162),
+    "capturing": (117, 197, 255),
+    "recognizing": (255, 205, 95),
+    "translating": (135, 177, 255),
+    "completed": (94, 224, 162),
+    "error": (255, 126, 126),
+}
+_STATUS_BUTTON_TEXT = {
+    "ready": _RECOGNIZE_TEXT,
+    "capturing": "截图中...",
+    "recognizing": "识别中...",
+    "translating": "翻译中...",
+    "completed": _RECOGNIZE_TEXT,
+    "error": _RECOGNIZE_TEXT,
+}
 
 if sys.platform == "win32":
     _USER32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -37,28 +62,44 @@ else:
 
 
 class _FloatingActionButton(QPushButton):
-    def __init__(self, text: str, style_type: str) -> None:
+    def __init__(self, text: str, kind: str = "primary") -> None:
         super().__init__(text, None)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setFocusPolicy(Qt.NoFocus)
         self.setCursor(Qt.PointingHandCursor)
-        if style_type == "close":
+        if kind == "close":
             self.setStyleSheet(
-                "QPushButton { background-color: rgba(28, 32, 40, 220); color: rgb(245, 245, 245); border: 1px solid rgba(255, 255, 255, 35); border-radius: 12px; font-size: 18px; font-weight: 600; }"
-                "QPushButton:hover { background-color: rgba(196, 70, 70, 235); }"
+                "QPushButton {"
+                " background-color: rgba(16, 20, 26, 220); color: rgb(242, 246, 249); border: 1px solid rgba(255, 255, 255, 22);"
+                " border-radius: 11px; font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 18px; font-weight: 600; }"
+                "QPushButton:hover { background-color: rgba(180, 66, 66, 232); }"
+                "QPushButton:pressed { background-color: rgba(154, 52, 52, 236); }"
             )
+            shadow_offset = 8
         else:
             self.setStyleSheet(
-                "QPushButton { background-color: rgba(61, 214, 140, 235); color: rgb(18, 22, 28); border: none; border-radius: 12px; padding: 6px 14px; font-weight: 600; }"
-                "QPushButton:disabled { background-color: rgba(120, 130, 145, 180); color: rgba(240, 240, 240, 200); }"
+                "QPushButton {"
+                " background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgb(96, 228, 164), stop:1 rgb(53, 186, 121));"
+                " color: rgb(10, 18, 14); border: none; border-radius: 12px; padding: 0 14px;"
+                " font-family: 'Segoe UI Variable Text', 'Microsoft YaHei UI'; font-size: 13px; font-weight: 700; }"
+                "QPushButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 rgb(110, 235, 176), stop:1 rgb(66, 198, 133)); }"
+                "QPushButton:pressed { background-color: rgb(58, 182, 120); }"
+                "QPushButton:disabled { background-color: rgba(118, 128, 138, 175); color: rgba(237, 241, 244, 205); }"
             )
+            shadow_offset = 10
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, shadow_offset)
+        shadow.setColor(QColor(6, 10, 14, 90))
+        self.setGraphicsEffect(shadow)
 
 
 class CaptureRegionOverlay(QWidget):
     recognize_requested = Signal(object)
     region_committed = Signal(object)
     hide_requested = Signal()
+    clear_requested = Signal()
 
     def __init__(self, initial_region: CaptureRegion) -> None:
         super().__init__(None)
@@ -69,6 +110,8 @@ class CaptureRegionOverlay(QWidget):
         self._interaction_screen_name = initial_region.screen_name
         self._interaction_screen_rect = initial_region.rect
         self._capture_exclusion_logged = False
+        self._current_status = "ready"
+        self._busy = False
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -88,16 +131,28 @@ class CaptureRegionOverlay(QWidget):
         self._result_view.setReadOnly(True)
         self._result_view.setPlaceholderText(_RESULT_PLACEHOLDER)
         self._result_view.hide()
-        self._result_view.setStyleSheet(
-            "QPlainTextEdit { background-color: rgba(9, 11, 16, 170); color: white; border: 1px solid rgba(255, 255, 255, 35); border-radius: 10px; padding: 8px; }"
-        )
+        self._result_view.setFrameStyle(QFrame.NoFrame)
+        self._result_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._result_view.customContextMenuRequested.connect(self._show_result_context_menu)
+        result_font = QFont("Microsoft YaHei UI", 12)
+        result_font.setHintingPreference(QFont.PreferFullHinting)
+        self._result_view.setFont(result_font)
+        self._result_view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self._result_view.setStyleSheet(self._result_stylesheet(False))
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(6, 10, 14, 90))
+        self._result_view.setGraphicsEffect(shadow)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(0)
         layout.addWidget(self._result_view, 1)
 
         self.apply_region(initial_region)
+        self.set_status("ready")
         logger.info("CaptureRegionOverlay initialized. region=%s", initial_region)
 
     def apply_region(self, region: CaptureRegion) -> None:
@@ -178,10 +233,7 @@ class CaptureRegionOverlay(QWidget):
     def show_result(self, text: str, is_error: bool = False) -> None:
         logger.info("CaptureRegionOverlay showing result. is_error=%s text_length=%s", is_error, len(text))
         self._result_view.setPlainText(text)
-        self._result_view.setStyleSheet(
-            "QPlainTextEdit { background-color: rgba(9, 11, 16, 170); color: %s; border: 1px solid rgba(255, 255, 255, 35); border-radius: 10px; padding: 8px; }"
-            % ("rgb(255, 120, 120)" if is_error else "white")
-        )
+        self._result_view.setStyleSheet(self._result_stylesheet(is_error))
         self._result_view.show()
         self._result_view.verticalScrollBar().setValue(0)
 
@@ -190,11 +242,21 @@ class CaptureRegionOverlay(QWidget):
         self._result_view.clear()
         self._result_view.hide()
 
+    def reset_to_idle(self) -> None:
+        logger.info("CaptureRegionOverlay resetting to idle state")
+        self.clear_result()
+        self.set_busy(False)
+        self.set_status("ready")
+
     def set_busy(self, busy: bool) -> None:
         logger.info("CaptureRegionOverlay busy state changed: %s", busy)
-        self._recognize_button.setEnabled(not busy)
-        self._recognize_button.setText(_RECOGNIZING_TEXT if busy else _RECOGNIZE_TEXT)
-        self._sync_action_buttons()
+        self._busy = busy
+        self._refresh_button_state()
+
+    def set_status(self, status: str) -> None:
+        self._current_status = status if status in _STATUS_BUTTON_TEXT else "ready"
+        self._refresh_button_state()
+        self.update()
 
     def hideEvent(self, event) -> None:
         self._recognize_button.hide()
@@ -209,30 +271,31 @@ class CaptureRegionOverlay(QWidget):
         super().resizeEvent(event)
         self._sync_action_buttons()
 
+    def contextMenuEvent(self, event) -> None:
+        if not self._can_clear_result():
+            return super().contextMenuEvent(event)
+        self._show_clear_menu(event.globalPos())
+        event.accept()
+
     def paintEvent(self, event: QPaintEvent) -> None:
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        rect = self.rect().adjusted(_FRAME_INSET, _FRAME_INSET, -_FRAME_INSET, -_FRAME_INSET)
-        painter.setBrush(QColor(18, 25, 33, 92))
-        painter.setPen(QPen(QColor(61, 214, 140, 245), 4))
-        painter.drawRoundedRect(rect, 14, 14)
 
-        corner_pen = QPen(QColor(245, 255, 249, 235), 3)
-        painter.setPen(corner_pen)
-        corner = 20
-        left = rect.left()
-        right = rect.right()
-        top = rect.top()
-        bottom = rect.bottom()
-        painter.drawLine(left + 8, top + 8, left + 8 + corner, top + 8)
-        painter.drawLine(left + 8, top + 8, left + 8, top + 8 + corner)
-        painter.drawLine(right - 8 - corner, top + 8, right - 8, top + 8)
-        painter.drawLine(right - 8, top + 8, right - 8, top + 8 + corner)
-        painter.drawLine(left + 8, bottom - 8, left + 8 + corner, bottom - 8)
-        painter.drawLine(left + 8, bottom - 8 - corner, left + 8, bottom - 8)
-        painter.drawLine(right - 8 - corner, bottom - 8, right - 8, bottom - 8)
-        painter.drawLine(right - 8, bottom - 8 - corner, right - 8, bottom - 8)
+        red, green, blue = _STATUS_BORDER_COLORS.get(self._current_status, _STATUS_BORDER_COLORS["ready"])
+        glow_rect = self.rect().adjusted(_FRAME_INSET, _FRAME_INSET, -_FRAME_INSET, -_FRAME_INSET)
+        frame_rect = glow_rect.adjusted(4, 4, -4, -4)
+
+        painter.setBrush(QColor(8, 12, 16, 22))
+        painter.setPen(QPen(QColor(red, green, blue, 42), 5))
+        painter.drawRoundedRect(glow_rect, 18, 18)
+
+        painter.setBrush(QColor(10, 14, 18, 24))
+        painter.setPen(QPen(QColor(255, 255, 255, 20), 1))
+        painter.drawRoundedRect(frame_rect, 16, 16)
+
+        painter.setPen(QPen(QColor(red, green, blue, 210), 2))
+        painter.drawRoundedRect(frame_rect, 16, 16)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.LeftButton:
@@ -281,6 +344,30 @@ class CaptureRegionOverlay(QWidget):
     def _emit_hide_requested(self) -> None:
         logger.info("CaptureRegionOverlay hide requested")
         self.hide_requested.emit()
+
+    def _show_result_context_menu(self, position: QPoint) -> None:
+        if not self._can_clear_result():
+            return
+        self._show_clear_menu(self._result_view.mapToGlobal(position))
+
+    def _show_clear_menu(self, global_pos: QPoint) -> None:
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { background-color: rgba(10, 14, 18, 240); color: rgb(242, 246, 249); border: 1px solid rgba(255, 255, 255, 18); border-radius: 10px; padding: 6px; }"
+            "QMenu::item { padding: 8px 18px; border-radius: 8px; }"
+            "QMenu::item:selected { background-color: rgba(94, 224, 162, 42); }"
+        )
+        clear_action = menu.addAction(_CLEAR_RESULT_TEXT)
+        selected = menu.exec(global_pos)
+        if selected == clear_action:
+            self._request_clear_result()
+
+    def _request_clear_result(self) -> None:
+        logger.info("CaptureRegionOverlay clear requested")
+        self.clear_requested.emit()
+
+    def _can_clear_result(self) -> bool:
+        return self._result_view.isVisible() and bool(self._result_view.toPlainText().strip()) and not self._busy
 
     def _apply_capture_exclusion(self) -> None:
         overlay_excluded = self._set_excluded_from_capture(self, True)
@@ -432,6 +519,21 @@ class CaptureRegionOverlay(QWidget):
             screen_rect,
         )
         return QRect(region.x, region.y, region.width, region.height)
+
+    def _refresh_button_state(self) -> None:
+        self._recognize_button.setEnabled(not self._busy)
+        self._recognize_button.setText(_STATUS_BUTTON_TEXT.get(self._current_status, _RECOGNIZE_TEXT))
+        self._sync_action_buttons()
+
+    @staticmethod
+    def _result_stylesheet(is_error: bool) -> str:
+        text_color = "rgb(255, 146, 146)" if is_error else "rgb(246, 249, 251)"
+        border_color = "rgba(255, 126, 126, 96)" if is_error else "rgba(255, 255, 255, 20)"
+        return (
+            "QPlainTextEdit { background-color: rgba(9, 13, 18, 208); color: %s; border: 1px solid %s;"
+            " border-radius: 18px; padding: 16px 18px; selection-background-color: rgba(135, 177, 255, 120);"
+            " font-family: 'Microsoft YaHei UI', 'Segoe UI Variable Text'; }"
+        ) % (text_color, border_color)
 
     @staticmethod
     def _set_excluded_from_capture(widget: QWidget, excluded: bool) -> bool:

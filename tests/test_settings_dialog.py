@@ -59,7 +59,29 @@ class SettingsDialogTests(unittest.TestCase):
         self.assertEqual(dialog._model_combo.itemText(0), "qwen3.5-flash")
         self.assertEqual(dialog._model_status_label.text(), "已加载 2 个推荐模型。")
 
+    def test_advanced_section_is_collapsed_by_default(self) -> None:
+        dialog = SettingsDialog(AppConfig())
+
+        self.assertFalse(dialog._advanced_toggle.isChecked())
+        self.assertFalse(dialog._advanced_panel.isVisible())
+        self.assertEqual(dialog._advanced_toggle.text(), "展开高级设置")
+
+    def test_dialog_height_shrinks_when_advanced_panel_collapses(self) -> None:
+        dialog = SettingsDialog(AppConfig())
+        dialog.show()
+        self._app.processEvents()
+
+        collapsed_height = dialog.height()
+        dialog._advanced_toggle.click()
+        self._app.processEvents()
+        expanded_height = dialog.height()
+        dialog._advanced_toggle.click()
+        self._app.processEvents()
+        collapsed_again_height = dialog.height()
+
+        self.assertGreater(expanded_height, collapsed_height)
+        self.assertLess(collapsed_again_height, expanded_height)
+
 
 if __name__ == "__main__":
     unittest.main()
-

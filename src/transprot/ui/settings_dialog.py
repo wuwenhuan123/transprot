@@ -2,18 +2,20 @@
 
 from concurrent.futures import Future, ThreadPoolExecutor
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
 )
 
@@ -24,6 +26,8 @@ from transprot.services.translation import (
     RECOMMENDED_TEXT_MODELS,
     load_recommended_model_options,
 )
+
+_MIN_DIALOG_WIDTH = 520
 
 
 class _SettingsBridge(QObject):
@@ -41,7 +45,19 @@ class SettingsDialog(QDialog):
         self._model_refresh_inflight = False
 
         self.setWindowTitle("TransProt 设置")
-        self.resize(560, 380)
+        self.setMinimumWidth(_MIN_DIALOG_WIDTH)
+        self.setStyleSheet(
+            "QDialog { background-color: rgb(243, 246, 247); }"
+            "QFrame#panelCard { background-color: rgb(255, 255, 255); border: 1px solid rgba(17, 24, 39, 18); border-radius: 16px; }"
+            "QLabel#panelHint { color: rgb(92, 104, 118); font-size: 12px; }"
+            "QLineEdit, QComboBox, QSpinBox {"
+            " min-height: 36px; background-color: rgb(255, 255, 255); border: 1px solid rgba(15, 23, 42, 18);"
+            " border-radius: 10px; padding: 0 12px; font-size: 13px; }"
+            "QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: rgba(94, 224, 162, 170); }"
+            "QComboBox::drop-down { border: none; width: 28px; }"
+            "QPushButton { min-height: 36px; border-radius: 10px; padding: 0 14px; font-size: 13px; font-weight: 600; }"
+            "QToolButton { color: rgb(33, 45, 56); font-size: 13px; font-weight: 700; border: none; padding: 4px 0; }"
+        )
 
         self._provider_combo = QComboBox()
         self._provider_combo.addItem("阿里云百炼 / OpenAI 兼容接口", TranslationProvider.OPENAI_COMPATIBLE)
@@ -54,9 +70,12 @@ class SettingsDialog(QDialog):
 
         self._base_url_edit = QLineEdit()
         self._base_url_edit.setPlaceholderText(DEFAULT_BAILIAN_BASE_URL)
+        self._base_url_edit.setClearButtonEnabled(True)
 
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setEchoMode(QLineEdit.Password)
+        self._api_key_edit.setClearButtonEnabled(True)
+        self._api_key_edit.setPlaceholderText("填写百炼 API 密钥")
 
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
@@ -66,6 +85,10 @@ class SettingsDialog(QDialog):
 
         self._refresh_models_button = QPushButton("刷新模型")
         self._refresh_models_button.clicked.connect(self._refresh_models_clicked)
+        self._refresh_models_button.setStyleSheet(
+            "QPushButton { background-color: rgb(248, 250, 251); color: rgb(30, 41, 53); border: 1px solid rgba(15, 23, 42, 18); }"
+            "QPushButton:hover { background-color: rgb(241, 245, 247); }"
+        )
 
         self._target_lang_edit = QLineEdit()
         self._target_lang_edit.setPlaceholderText("zh-CN")
@@ -75,30 +98,70 @@ class SettingsDialog(QDialog):
         self._timeout_spin.setRange(5, 180)
         self._timeout_spin.setSuffix(" 秒")
 
-        self._hotkey_hint = QLabel("当前版本不通过热键触发框选。")
-        self._hotkey_hint.setWordWrap(True)
-
         self._model_status_label = QLabel("")
+        self._model_status_label.setObjectName("panelHint")
         self._model_status_label.setWordWrap(True)
-        self._model_status_label.setStyleSheet("color: rgb(120, 130, 145);")
+        self._model_status_label.hide()
 
-        form_layout = QFormLayout()
-        form_layout.addRow("服务类型", self._provider_combo)
-        form_layout.addRow("热键", self._hotkey_edit)
-        form_layout.addRow("接口地址", self._base_url_edit)
-        form_layout.addRow("API 密钥", self._api_key_edit)
+        common_card = QFrame()
+        common_card.setObjectName("panelCard")
+        common_layout = QVBoxLayout(common_card)
+        common_layout.setContentsMargins(16, 16, 16, 16)
+        common_layout.setSpacing(12)
+
+        common_form = QFormLayout()
+        common_form.setContentsMargins(0, 0, 0, 0)
+        common_form.setSpacing(14)
+        common_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        common_form.addRow("API 密钥", self._api_key_edit)
 
         model_layout = QHBoxLayout()
         model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(8)
         model_layout.addWidget(self._model_combo, 1)
         model_layout.addWidget(self._refresh_models_button)
-        form_layout.addRow("模型", model_layout)
-        form_layout.addRow("目标语言", self._target_lang_edit)
-        form_layout.addRow("超时", self._timeout_spin)
+        common_form.addRow("模型", model_layout)
+        common_form.addRow("", self._model_status_label)
+        common_form.addRow("目标语言", self._target_lang_edit)
+        common_form.addRow("超时", self._timeout_spin)
+        common_layout.addLayout(common_form)
+
+        self._advanced_toggle = QToolButton()
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.setChecked(False)
+        self._advanced_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._advanced_toggle.toggled.connect(self._set_advanced_visible)
+
+        self._advanced_panel = QFrame()
+        self._advanced_panel.setObjectName("panelCard")
+        advanced_panel_layout = QVBoxLayout(self._advanced_panel)
+        advanced_panel_layout.setContentsMargins(16, 16, 16, 16)
+        advanced_panel_layout.setSpacing(0)
+
+        advanced_form = QFormLayout()
+        advanced_form.setContentsMargins(0, 0, 0, 0)
+        advanced_form.setSpacing(14)
+        advanced_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        advanced_form.addRow("服务类型", self._provider_combo)
+        advanced_form.addRow("接口地址", self._base_url_edit)
+        advanced_form.addRow("热键", self._hotkey_edit)
+        advanced_panel_layout.addLayout(advanced_form)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        button_box.button(QDialogButtonBox.Save).setText("保存")
-        button_box.button(QDialogButtonBox.Cancel).setText("取消")
+        save_button = button_box.button(QDialogButtonBox.Save)
+        cancel_button = button_box.button(QDialogButtonBox.Cancel)
+        save_button.setText("保存")
+        cancel_button.setText("取消")
+        save_button.setMinimumWidth(112)
+        cancel_button.setMinimumWidth(96)
+        save_button.setStyleSheet(
+            "QPushButton { background-color: rgb(94, 224, 162); color: rgb(14, 20, 16); border: none; }"
+            "QPushButton:hover { background-color: rgb(109, 232, 177); }"
+        )
+        cancel_button.setStyleSheet(
+            "QPushButton { background-color: rgb(248, 250, 251); color: rgb(34, 45, 56); border: 1px solid rgba(15, 23, 42, 18); }"
+            "QPushButton:hover { background-color: rgb(241, 245, 247); }"
+        )
         button_box.accepted.connect(self._accept_with_validation)
         button_box.rejected.connect(self.reject)
 
@@ -107,14 +170,17 @@ class SettingsDialog(QDialog):
         footer_layout.addWidget(button_box)
 
         main_layout = QVBoxLayout(self)
-        main_layout.addLayout(form_layout)
-        main_layout.addWidget(self._model_status_label)
-        main_layout.addWidget(self._hotkey_hint)
-        main_layout.addStretch(1)
+        main_layout.setContentsMargins(18, 18, 18, 18)
+        main_layout.setSpacing(12)
+        main_layout.addWidget(common_card)
+        main_layout.addWidget(self._advanced_toggle)
+        main_layout.addWidget(self._advanced_panel)
         main_layout.addLayout(footer_layout)
 
         self.finished.connect(self._shutdown_executor)
+        self._set_advanced_visible(False)
         self.apply_config(config)
+        self._sync_dialog_size()
 
     def apply_config(self, config: AppConfig) -> None:
         self._config = config
@@ -127,6 +193,14 @@ class SettingsDialog(QDialog):
         self._target_lang_edit.setText(config.target_lang)
         self._timeout_spin.setValue(config.timeout_sec)
         self._update_form_state()
+
+        show_advanced = (
+            config.translation_provider != TranslationProvider.OPENAI_COMPATIBLE
+            or bool(config.api_base_url.strip() and config.api_base_url.strip() != DEFAULT_BAILIAN_BASE_URL)
+        )
+        self._advanced_toggle.setChecked(show_advanced)
+        self._set_advanced_visible(show_advanced)
+
         if not self._initial_models_requested and config.translation_provider == TranslationProvider.OPENAI_COMPATIBLE:
             self._initial_models_requested = True
             self.refresh_model_options(show_warning=False)
@@ -156,12 +230,12 @@ class SettingsDialog(QDialog):
             return
         provider = self._provider_combo.currentData()
         if provider != TranslationProvider.OPENAI_COMPATIBLE:
-            self._model_status_label.setText("当前服务类型不支持自动加载模型列表。")
+            self._set_model_status("当前服务类型不支持自动加载模型列表。")
             return
 
         self._model_refresh_inflight = True
         self._refresh_models_button.setEnabled(False)
-        self._model_status_label.setText("正在刷新模型列表...")
+        self._set_model_status("正在刷新模型列表...")
         base_url = self._base_url_edit.text().strip() or DEFAULT_BAILIAN_BASE_URL
         api_key = self._api_key_edit.text().strip()
         timeout_sec = int(self._timeout_spin.value())
@@ -178,9 +252,27 @@ class SettingsDialog(QDialog):
         self._model_combo.setEnabled(is_openai)
         self._refresh_models_button.setEnabled(is_openai and not self._model_refresh_inflight)
         if not is_openai:
-            self._model_status_label.setText("当前服务类型不支持自动加载模型列表。")
+            self._set_model_status("当前服务类型不支持自动加载模型列表。")
         elif not self._model_status_label.text():
-            self._model_status_label.setText("支持手动输入模型名，也可以点击刷新模型加载推荐列表。")
+            self._set_model_status("")
+
+    def _set_advanced_visible(self, visible: bool) -> None:
+        self._advanced_panel.setVisible(visible)
+        self._advanced_toggle.setArrowType(Qt.DownArrow if visible else Qt.RightArrow)
+        self._advanced_toggle.setText("收起高级设置" if visible else "展开高级设置")
+        self._sync_dialog_size()
+
+    def _sync_dialog_size(self) -> None:
+        layout = self.layout()
+        if layout is None:
+            return
+        layout.activate()
+        target_height = max(self.minimumSizeHint().height(), layout.sizeHint().height() + 12)
+        self.resize(max(self.width(), _MIN_DIALOG_WIDTH), target_height)
+
+    def _set_model_status(self, text: str) -> None:
+        self._model_status_label.setText(text)
+        self._model_status_label.setVisible(bool(text.strip()))
 
     def _accept_with_validation(self) -> None:
         try:
@@ -234,7 +326,7 @@ class SettingsDialog(QDialog):
     def _handle_model_payload(self, payload: dict[str, object]) -> None:
         self._model_refresh_inflight = False
         self._set_model_options(payload["models"])
-        self._model_status_label.setText(str(payload["status"]))
+        self._set_model_status(str(payload["status"]))
         self._update_form_state()
 
         error = payload.get("error")
