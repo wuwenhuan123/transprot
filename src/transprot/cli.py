@@ -25,6 +25,7 @@ def run_self_check() -> None:
         "provider": config.translation_provider.value,
         "hotkey": config.hotkey,
         "api_base_url": config.api_base_url,
+        "api_key_saved": config.api_key_saved,
         "model": config.model,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

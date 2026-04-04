@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from transprot.core.config import AppConfigStore
+from transprot.core.errors import ConfigurationError, SecretStoreError
 from transprot.core.layout import resolve_capture_region
 from transprot.core.logging_utils import configure_logging
 from transprot.core.models import CaptureRegion, TranslationResult
@@ -27,6 +28,7 @@ _SETTINGS_TEXT = "设置"
 _QUIT_TEXT = "退出"
 _NO_SCREEN_TEXT = "当前没有可用的屏幕。"
 _SETTINGS_SAVED_TEXT = "设置已保存。"
+_SETTINGS_SAVE_FAILED_PREFIX = "设置保存失败："
 _TRAY_TITLE_TEXT = "TransProt"
 _STATUS_TEXT = {
     "ready": "就绪",
@@ -133,7 +135,7 @@ class TransProtDesktopApp(QObject):
             config.translation_provider.value,
             config.model,
             config.timeout_sec,
-            bool(config.api_key.strip()),
+            bool(config.api_key_saved),
         )
         return config
 
@@ -230,7 +232,7 @@ class TransProtDesktopApp(QObject):
         logger.info("Clear translation result requested")
         self._current_status = "ready"
         self._capture_overlay.reset_to_idle()
-        self._tray.setToolTip(f"{_TRAY_TITLE_TEXT} - {_STATUS_TEXT["ready"]}")
+        self._tray.setToolTip(f"{_TRAY_TITLE_TEXT} - {_STATUS_TEXT['ready']}")
 
     def _on_status_changed(self, status: str) -> None:
         logger.info("Status changed: %s", status)
@@ -266,10 +268,18 @@ class TransProtDesktopApp(QObject):
         dialog = self._settings_dialog
         if dialog is None:
             return
-        self._config = dialog.build_config()
-        self._config.capture_region = self._capture_overlay.current_region()
-        self._config_store.save(self._config)
-        logger.info("Settings saved")
+
+        try:
+            pending_config = dialog.build_config()
+            pending_config.capture_region = self._capture_overlay.current_region()
+            self._config_store.save(pending_config)
+            self._config = self._config_store.load()
+        except (ConfigurationError, SecretStoreError) as exc:
+            logger.exception("Failed to save settings")
+            self._tray.showMessage(_TRAY_TITLE_TEXT, f"{_SETTINGS_SAVE_FAILED_PREFIX}{exc}", QSystemTrayIcon.Warning)
+            return
+
+        logger.info("Settings saved. has_api_key=%s", self._config.api_key_saved)
         self._tray.showMessage(_TRAY_TITLE_TEXT, _SETTINGS_SAVED_TEXT)
 
     def _on_settings_dialog_finished(self, result: int) -> None:
@@ -317,4 +327,3 @@ def launch_app() -> int:
     app.setProperty("transprot_controller", controller)
     app._transprot_controller = controller
     return app.exec()
-

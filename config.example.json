@@ -1,8 +1,8 @@
-{
+﻿{
   "hotkey": "Ctrl+Alt+T",
   "translation_provider": "openai_compatible",
   "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  "api_key": "YOUR_DASHSCOPE_API_KEY",
+  "api_key_saved": false,
   "model": "qwen-mt-flash",
   "timeout_sec": 60,
   "log_level": "INFO",
@@ -10,5 +10,3 @@
   "target_lang": "zh-CN",
   "capture_region": null
 }
-
-

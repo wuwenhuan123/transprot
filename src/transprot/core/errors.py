@@ -19,3 +19,7 @@ class TranslationError(TransProtError):
 
 class HotkeyError(TransProtError):
     """热键注册失败时抛出。"""
+
+
+class SecretStoreError(TransProtError):
+    """安全存储不可用或读写失败时抛出。"""

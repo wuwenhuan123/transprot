@@ -28,6 +28,15 @@ from transprot.services.translation import (
 )
 
 _MIN_DIALOG_WIDTH = 520
+_API_KEY_PLACEHOLDER = "填写百炼 API 密钥"
+_GENERIC_API_KEY_PLACEHOLDER = "如接口需要，可填写接口密钥"
+_SAVED_API_KEY_PLACEHOLDER = "已保存，留空表示保持不变"
+_GENERIC_BASE_URL_PLACEHOLDER = "填写通用翻译接口地址"
+_BASIC_HTTP_MODEL_STATUS = "当前服务类型不使用模型，也不支持加载模型列表。"
+_TARGET_LANGUAGE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("中文", "zh-CN"),
+    ("英文", "en"),
+)
 
 
 class _SettingsBridge(QObject):
@@ -43,6 +52,8 @@ class SettingsDialog(QDialog):
         self._bridge.payload_ready.connect(self._handle_model_payload)
         self._initial_models_requested = False
         self._model_refresh_inflight = False
+        self._api_key_saved_state = False
+        self._api_key_clear_requested = False
 
         self.setWindowTitle("TransProt 设置")
         self.setMinimumWidth(_MIN_DIALOG_WIDTH)
@@ -75,7 +86,19 @@ class SettingsDialog(QDialog):
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setEchoMode(QLineEdit.Password)
         self._api_key_edit.setClearButtonEnabled(True)
-        self._api_key_edit.setPlaceholderText("填写百炼 API 密钥")
+        self._api_key_edit.setPlaceholderText(_API_KEY_PLACEHOLDER)
+
+        self._clear_api_key_button = QPushButton("清除已保存密钥")
+        self._clear_api_key_button.clicked.connect(self._clear_saved_api_key)
+        self._clear_api_key_button.setStyleSheet(
+            "QPushButton { background-color: rgb(248, 250, 251); color: rgb(30, 41, 53); border: 1px solid rgba(15, 23, 42, 18); }"
+            "QPushButton:hover { background-color: rgb(241, 245, 247); }"
+        )
+
+        self._api_key_status_label = QLabel("")
+        self._api_key_status_label.setObjectName("panelHint")
+        self._api_key_status_label.setWordWrap(False)
+        self._api_key_status_label.hide()
 
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
@@ -90,9 +113,9 @@ class SettingsDialog(QDialog):
             "QPushButton:hover { background-color: rgb(241, 245, 247); }"
         )
 
-        self._target_lang_edit = QLineEdit()
-        self._target_lang_edit.setPlaceholderText("zh-CN")
-        self._target_lang_edit.setToolTip("例如 zh-CN、en、ja。")
+        self._target_lang_combo = QComboBox()
+        for label, value in _TARGET_LANGUAGE_OPTIONS:
+            self._target_lang_combo.addItem(label, value)
 
         self._timeout_spin = QSpinBox()
         self._timeout_spin.setRange(5, 180)
@@ -100,7 +123,7 @@ class SettingsDialog(QDialog):
 
         self._model_status_label = QLabel("")
         self._model_status_label.setObjectName("panelHint")
-        self._model_status_label.setWordWrap(True)
+        self._model_status_label.setWordWrap(False)
         self._model_status_label.hide()
 
         common_card = QFrame()
@@ -113,16 +136,28 @@ class SettingsDialog(QDialog):
         common_form.setContentsMargins(0, 0, 0, 0)
         common_form.setSpacing(14)
         common_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        common_form.addRow("API 密钥", self._api_key_edit)
+
+        self._api_key_label = QLabel("API 密钥")
+        self._model_label = QLabel("模型")
+        self._target_lang_label = QLabel("目标语言")
+        self._base_url_label = QLabel("接口地址")
+
+        api_key_row = QHBoxLayout()
+        api_key_row.setContentsMargins(0, 0, 0, 0)
+        api_key_row.setSpacing(8)
+        api_key_row.addWidget(self._api_key_edit, 1)
+        api_key_row.addWidget(self._clear_api_key_button)
+        common_form.addRow(self._api_key_label, api_key_row)
+        common_form.addRow("", self._api_key_status_label)
 
         model_layout = QHBoxLayout()
         model_layout.setContentsMargins(0, 0, 0, 0)
         model_layout.setSpacing(8)
         model_layout.addWidget(self._model_combo, 1)
         model_layout.addWidget(self._refresh_models_button)
-        common_form.addRow("模型", model_layout)
+        common_form.addRow(self._model_label, model_layout)
         common_form.addRow("", self._model_status_label)
-        common_form.addRow("目标语言", self._target_lang_edit)
+        common_form.addRow(self._target_lang_label, self._target_lang_combo)
         common_form.addRow("超时", self._timeout_spin)
         common_layout.addLayout(common_form)
 
@@ -143,7 +178,7 @@ class SettingsDialog(QDialog):
         advanced_form.setSpacing(14)
         advanced_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         advanced_form.addRow("服务类型", self._provider_combo)
-        advanced_form.addRow("接口地址", self._base_url_edit)
+        advanced_form.addRow(self._base_url_label, self._base_url_edit)
         advanced_form.addRow("热键", self._hotkey_edit)
         advanced_panel_layout.addLayout(advanced_form)
 
@@ -180,17 +215,19 @@ class SettingsDialog(QDialog):
         self.finished.connect(self._shutdown_executor)
         self._set_advanced_visible(False)
         self.apply_config(config)
-        self._sync_dialog_size()
 
     def apply_config(self, config: AppConfig) -> None:
         self._config = config
+        self._api_key_saved_state = config.api_key_saved
+        self._api_key_clear_requested = False
         index = self._provider_combo.findData(config.translation_provider)
         self._provider_combo.setCurrentIndex(max(index, 0))
         self._hotkey_edit.setText(config.hotkey)
         self._base_url_edit.setText(config.api_base_url or DEFAULT_BAILIAN_BASE_URL)
-        self._api_key_edit.setText(config.api_key)
+        self._api_key_edit.clear()
+        self._sync_api_key_ui()
         self._set_model_options(RECOMMENDED_TEXT_MODELS, current_text=config.model or DEFAULT_BAILIAN_MODEL)
-        self._target_lang_edit.setText(config.target_lang)
+        self._set_target_language(config.target_lang)
         self._timeout_spin.setValue(config.timeout_sec)
         self._update_form_state()
 
@@ -209,6 +246,9 @@ class SettingsDialog(QDialog):
         provider = self._provider_combo.currentData()
         base_url = self._base_url_edit.text().strip()
         model = self._model_combo.currentText().strip()
+        api_key = self._api_key_edit.text().strip()
+        api_key_saved = bool(api_key) or self._api_key_saved_state
+        target_lang = str(self._target_lang_combo.currentData() or "zh-CN")
         if provider == TranslationProvider.OPENAI_COMPATIBLE:
             base_url = base_url or DEFAULT_BAILIAN_BASE_URL
             model = model or DEFAULT_BAILIAN_MODEL
@@ -216,12 +256,13 @@ class SettingsDialog(QDialog):
             hotkey=self._hotkey_edit.text().strip() or "Ctrl+Alt+T",
             translation_provider=provider,
             api_base_url=base_url,
-            api_key=self._api_key_edit.text().strip(),
+            api_key=api_key,
+            api_key_saved=api_key_saved,
             model=model,
             timeout_sec=int(self._timeout_spin.value()),
             log_level=self._config.log_level,
             source_lang=self._config.source_lang,
-            target_lang=self._target_lang_edit.text().strip() or "zh-CN",
+            target_lang=target_lang,
             capture_region=self._config.capture_region,
         )
 
@@ -230,14 +271,14 @@ class SettingsDialog(QDialog):
             return
         provider = self._provider_combo.currentData()
         if provider != TranslationProvider.OPENAI_COMPATIBLE:
-            self._set_model_status("当前服务类型不支持自动加载模型列表。")
+            self._set_model_status(_BASIC_HTTP_MODEL_STATUS)
             return
 
         self._model_refresh_inflight = True
         self._refresh_models_button.setEnabled(False)
         self._set_model_status("正在刷新模型列表...")
         base_url = self._base_url_edit.text().strip() or DEFAULT_BAILIAN_BASE_URL
-        api_key = self._api_key_edit.text().strip()
+        api_key = self._effective_api_key()
         timeout_sec = int(self._timeout_spin.value())
         future = self._executor.submit(load_recommended_model_options, base_url, api_key, timeout_sec)
         future.add_done_callback(
@@ -246,21 +287,62 @@ class SettingsDialog(QDialog):
             )
         )
 
+    def _effective_api_key(self) -> str:
+        entered_key = self._api_key_edit.text().strip()
+        if entered_key:
+            return entered_key
+        if self._api_key_saved_state and not self._api_key_clear_requested:
+            return self._config.api_key
+        return ""
+
     def _update_form_state(self) -> None:
         provider = self._provider_combo.currentData()
         is_openai = provider == TranslationProvider.OPENAI_COMPATIBLE
+        self._base_url_label.setText("OpenAI 接口地址" if is_openai else "通用接口地址")
+        self._api_key_label.setText("API 密钥" if is_openai else "接口密钥")
+        self._model_label.setText("模型" if is_openai else "模型（不使用）")
         self._model_combo.setEnabled(is_openai)
+        self._model_combo.setToolTip("" if is_openai else "当前服务类型不使用模型配置。")
         self._refresh_models_button.setEnabled(is_openai and not self._model_refresh_inflight)
+        self._refresh_models_button.setVisible(is_openai)
+        self._model_label.setEnabled(is_openai)
+        self._clear_api_key_button.setEnabled(self._api_key_saved_state)
+        if not self._api_key_saved_state:
+            self._api_key_edit.setPlaceholderText(self._default_api_key_placeholder())
+        self._base_url_edit.setPlaceholderText(
+            DEFAULT_BAILIAN_BASE_URL if is_openai else _GENERIC_BASE_URL_PLACEHOLDER
+        )
         if not is_openai:
-            self._set_model_status("当前服务类型不支持自动加载模型列表。")
-        elif not self._model_status_label.text():
+            self._set_model_status(_BASIC_HTTP_MODEL_STATUS)
+        elif self._model_status_label.text() in {"", _BASIC_HTTP_MODEL_STATUS}:
             self._set_model_status("")
+
+    def _sync_api_key_ui(self) -> None:
+        if self._api_key_clear_requested:
+            self._api_key_edit.setPlaceholderText(self._default_api_key_placeholder())
+            self._set_api_key_status("已清除已保存密钥，保存后生效。")
+        elif self._api_key_saved_state:
+            self._api_key_edit.setPlaceholderText(_SAVED_API_KEY_PLACEHOLDER)
+            self._set_api_key_status("已保存，留空表示保持不变。")
+        else:
+            self._api_key_edit.setPlaceholderText(self._default_api_key_placeholder())
+            self._set_api_key_status("")
+        self._update_form_state()
+
+    def _clear_saved_api_key(self) -> None:
+        self._api_key_edit.clear()
+        self._api_key_saved_state = False
+        self._api_key_clear_requested = True
+        self._config.api_key = ""
+        self._config.api_key_saved = False
+        self._sync_api_key_ui()
 
     def _set_advanced_visible(self, visible: bool) -> None:
         self._advanced_panel.setVisible(visible)
         self._advanced_toggle.setArrowType(Qt.DownArrow if visible else Qt.RightArrow)
         self._advanced_toggle.setText("收起高级设置" if visible else "展开高级设置")
-        self._sync_dialog_size()
+        if self.isVisible():
+            self._sync_dialog_size()
 
     def _sync_dialog_size(self) -> None:
         layout = self.layout()
@@ -270,9 +352,23 @@ class SettingsDialog(QDialog):
         target_height = max(self.minimumSizeHint().height(), layout.sizeHint().height() + 12)
         self.resize(max(self.width(), _MIN_DIALOG_WIDTH), target_height)
 
+    def _set_api_key_status(self, text: str) -> None:
+        self._api_key_status_label.setText(text)
+        self._api_key_status_label.setVisible(bool(text.strip()))
+
     def _set_model_status(self, text: str) -> None:
         self._model_status_label.setText(text)
         self._model_status_label.setVisible(bool(text.strip()))
+
+    def _default_api_key_placeholder(self) -> str:
+        provider = self._provider_combo.currentData()
+        if provider == TranslationProvider.BASIC_HTTP:
+            return _GENERIC_API_KEY_PLACEHOLDER
+        return _API_KEY_PLACEHOLDER
+
+    def _set_target_language(self, target_lang: str) -> None:
+        index = self._target_lang_combo.findData(target_lang)
+        self._target_lang_combo.setCurrentIndex(index if index >= 0 else 0)
 
     def _accept_with_validation(self) -> None:
         try:

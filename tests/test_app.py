@@ -83,7 +83,7 @@ class AppBehaviorTests(unittest.TestCase):
 
     def test_load_runtime_config_reads_config_file_and_preserves_visible_region(self) -> None:
         overlay = _FakeOverlay()
-        stored_config = AppConfig(api_key="file-key", model="file-model", timeout_sec=88)
+        stored_config = AppConfig(api_key="file-key", api_key_saved=True, model="file-model", timeout_sec=88)
         controller = types.SimpleNamespace(
             _config_store=types.SimpleNamespace(load=lambda: stored_config),
             _capture_overlay=overlay,
@@ -189,7 +189,30 @@ class AppBehaviorTests(unittest.TestCase):
         self.assertTrue(overlay.cleared)
         self.assertEqual(overlay.busy_states[-1], False)
         self.assertEqual(overlay.statuses[-1], "ready")
-        self.assertEqual(tray.tooltips[-1], "TransProt - \u5c31\u7eea")
+        self.assertEqual(tray.tooltips[-1], "TransProt - 就绪")
+
+    def test_save_settings_from_dialog_reloads_runtime_config_from_store(self) -> None:
+        overlay = _FakeOverlay()
+        tray = _FakeTray()
+        saved_configs: list[AppConfig] = []
+        reloaded_config = AppConfig(api_key="secure-key", api_key_saved=True, model="qwen-secure")
+        dialog = types.SimpleNamespace(build_config=lambda: AppConfig(api_key="", api_key_saved=True, model="qwen-test"))
+        controller = types.SimpleNamespace(
+            _settings_dialog=dialog,
+            _capture_overlay=overlay,
+            _config_store=types.SimpleNamespace(
+                save=lambda config: saved_configs.append(config),
+                load=lambda: reloaded_config,
+            ),
+            _tray=tray,
+            _config=None,
+        )
+
+        TransProtDesktopApp._save_settings_from_dialog(controller)
+
+        self.assertEqual(saved_configs[0].capture_region, overlay.frame_region)
+        self.assertIs(controller._config, reloaded_config)
+        self.assertEqual(tray.messages[-1][1], "设置已保存。")
 
     def test_tray_click_shows_capture_region(self) -> None:
         calls: list[str] = []

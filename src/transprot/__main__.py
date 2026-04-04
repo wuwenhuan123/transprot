@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from transprot.cli import run_self_check
+from transprot.core.errors import ConfigurationError, SecretStoreError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,7 +32,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         raise
 
-    return launch_app()
+    try:
+        return launch_app()
+    except (ConfigurationError, SecretStoreError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

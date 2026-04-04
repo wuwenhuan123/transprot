@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -55,6 +55,7 @@ class AppConfig:
     translation_provider: TranslationProvider = TranslationProvider.OPENAI_COMPATIBLE
     api_base_url: str = _DEFAULT_BAILIAN_BASE_URL
     api_key: str = ""
+    api_key_saved: bool = False
     model: str = _DEFAULT_BAILIAN_MODEL
     timeout_sec: int = _DEFAULT_TIMEOUT_SEC
     log_level: str = _DEFAULT_LOG_LEVEL
@@ -62,12 +63,14 @@ class AppConfig:
     target_lang: str = _DEFAULT_TARGET_LANG
     capture_region: CaptureRegion | None = None
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self, include_api_key: bool = True) -> dict[str, object]:
         payload = asdict(self)
         payload["translation_provider"] = self.translation_provider.value
         payload["capture_region"] = (
             self.capture_region.to_dict() if self.capture_region is not None else None
         )
+        if not include_api_key:
+            payload.pop("api_key", None)
         return payload
 
     @classmethod
@@ -79,6 +82,7 @@ class AppConfig:
             translation_provider=TranslationProvider(str(provider)),
             api_base_url=_coerce_string(payload.get("api_base_url"), _DEFAULT_BAILIAN_BASE_URL),
             api_key=_coerce_string(payload.get("api_key"), ""),
+            api_key_saved=_coerce_bool(payload.get("api_key_saved"), False),
             model=_coerce_string(payload.get("model"), _DEFAULT_BAILIAN_MODEL),
             timeout_sec=_coerce_int(payload.get("timeout_sec"), _DEFAULT_TIMEOUT_SEC),
             log_level=_coerce_string(payload.get("log_level"), _DEFAULT_LOG_LEVEL),
@@ -144,3 +148,15 @@ def _coerce_int(value: object, default: int) -> int:
         return default
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
