@@ -23,6 +23,7 @@ class ConfigStoreTests(unittest.TestCase):
             api_key="secret",
             model="",
             timeout_sec=45,
+            auto_mode_enabled=True,
             capture_region=CaptureRegion(
                 screen_name="Display-1",
                 x=120,
@@ -38,6 +39,7 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(loaded.translation_provider, TranslationProvider.BASIC_HTTP)
         self.assertEqual(loaded.api_base_url, "https://example.com/translate")
         self.assertEqual(loaded.timeout_sec, 45)
+        self.assertTrue(loaded.auto_mode_enabled)
         self.assertEqual(loaded.capture_region, config.capture_region)
 
         if config_path.exists():

@@ -14,6 +14,7 @@ class TranslationTests(unittest.TestCase):
     def test_prompt_targets_requested_language(self) -> None:
         prompt = build_translation_prompt("hello", "Simplified Chinese")
         self.assertIn("Simplified Chinese", prompt[0]["content"])
+        self.assertIn("OCR mistakes", prompt[0]["content"])
         self.assertEqual(prompt[1]["content"], "hello")
 
     def test_openai_url_normalization(self) -> None:

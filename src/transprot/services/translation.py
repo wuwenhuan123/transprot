@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import time
@@ -15,8 +15,10 @@ from transprot.core.text import normalize_translation_text
 def build_translation_prompt(text: str, target_lang: str) -> list[dict[str, str]]:
     system_prompt = (
         "You are a screen translation assistant. "
-        f"Detect the source language and translate the content into {target_lang}. "
-        "Return translated text only. Do not explain. Preserve paragraph, list, and line breaks when possible."
+        f"Detect the source language automatically and translate it into {target_lang}. "
+        "You may correct minor OCR mistakes when needed. "
+        "Preserve paragraphs, lists, punctuation, and line breaks when possible. "
+        "Return translated text only."
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -55,13 +57,13 @@ def _post_json(
                 break
         time.sleep(0.8)
 
-    raise TranslationError(f"Translation request failed: {last_error}")
+    raise TranslationError(f"翻译请求失败：{last_error}")
 
 
 def _normalize_openai_url(base_url: str) -> str:
     cleaned = base_url.strip().rstrip("/")
     if not cleaned:
-        raise ConfigurationError("API base URL is required.")
+        raise ConfigurationError("请先在设置中填写接口地址。")
     if cleaned.endswith("/chat/completions"):
         return cleaned
     if cleaned.endswith("/v1"):
@@ -84,7 +86,7 @@ def _extract_openai_text(payload: dict[str, Any]) -> str:
     if isinstance(output_text, str):
         return normalize_translation_text(output_text)
 
-    raise TranslationError("No translated text found in OpenAI-compatible response.")
+    raise TranslationError("翻译接口返回了空结果。")
 
 
 def _walk_for_text(payload: Any) -> str | None:
@@ -118,7 +120,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
 
     def translate(self, text: str, config: AppConfig) -> TranslationResult:
         if not config.model:
-            raise ConfigurationError("Model is required for OpenAI-compatible translation.")
+            raise ConfigurationError("请先在设置中填写模型名称。")
 
         start = time.perf_counter()
         payload = {
@@ -152,7 +154,7 @@ class BasicHttpTranslator(BaseTranslator):
 
     def translate(self, text: str, config: AppConfig) -> TranslationResult:
         if not config.api_base_url.strip():
-            raise ConfigurationError("API endpoint is required for basic translation mode.")
+            raise ConfigurationError("请先在设置中填写翻译接口地址。")
 
         start = time.perf_counter()
         headers = {}
@@ -174,7 +176,7 @@ class BasicHttpTranslator(BaseTranslator):
         )
         translated = _walk_for_text(response)
         if not translated:
-            raise TranslationError("No translated text found in basic API response.")
+            raise TranslationError("翻译接口没有返回可用文本。")
         elapsed = int((time.perf_counter() - start) * 1000)
         return TranslationResult(
             source_text=text,

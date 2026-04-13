@@ -75,10 +75,10 @@ class CaptureRegionOverlayTests(unittest.TestCase):
             overlay._hint_label.text(),
             "\u62d6\u52a8\u6216\u7f29\u653e\u8fd9\u4e2a\u533a\u57df\uff0c\u4f7f\u5b83\u8986\u76d6\u76ee\u6807\u6587\u5b57",
         )
-        self.assertEqual(overlay._recognize_button.text(), "\u8bc6\u522b")
-        self.assertEqual(overlay._result_view.placeholderText(), "OCR \u8bc6\u522b\u7ed3\u679c")
+        self.assertEqual(overlay._translate_button.text(), "\u7ffb\u8bd1")
+        self.assertEqual(overlay._result_view.placeholderText(), "\u7ffb\u8bd1\u7ed3\u679c")
         overlay.set_busy(True)
-        self.assertEqual(overlay._recognize_button.text(), "\u8bc6\u522b\u4e2d...")
+        self.assertEqual(overlay._translate_button.text(), "\u7ffb\u8bd1\u4e2d...")
 
     def test_recognize_button_stays_outside_overlay(self) -> None:
         overlay = CaptureRegionOverlay(
@@ -88,9 +88,21 @@ class CaptureRegionOverlayTests(unittest.TestCase):
         overlay.show_region()
         self._app.processEvents()
 
-        self.assertTrue(overlay._recognize_button.isVisible())
-        self.assertFalse(overlay.geometry().intersects(overlay._recognize_button.geometry()))
-        self.assertGreaterEqual(overlay._recognize_button.geometry().right(), overlay.geometry().right() - 40)
+        self.assertTrue(overlay._translate_button.isVisible())
+        self.assertFalse(overlay.geometry().intersects(overlay._translate_button.geometry()))
+        self.assertGreaterEqual(overlay._translate_button.geometry().right(), overlay.geometry().right() - 40)
+
+    def test_clear_requested_signal_is_emitted_from_result_menu(self) -> None:
+        overlay = CaptureRegionOverlay(
+            CaptureRegion(screen_name="Primary", x=100, y=120, width=420, height=180)
+        )
+        overlay.show_result("translated text")
+
+        triggered: list[str] = []
+        overlay.clear_requested.connect(lambda: triggered.append("clear"))
+        overlay.clear_requested.emit()
+
+        self.assertEqual(triggered, ["clear"])
 
 
 if __name__ == "__main__":

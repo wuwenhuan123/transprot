@@ -3,8 +3,16 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent, QPen
-from PySide6.QtWidgets import QApplication, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QContextMenuEvent, QMouseEvent, QPainter, QPaintEvent, QPen
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMenu,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from transprot.core.layout import MIN_CAPTURE_SIZE, clamp_capture_region
 from transprot.core.models import CaptureRegion
@@ -14,13 +22,14 @@ logger = logging.getLogger(__name__)
 _RESIZE_MARGIN = 10
 _BUTTON_GAP = 10
 _BUTTON_MIN_SIZE = QSize(96, 36)
-_HINT_TEXT = "\u62d6\u52a8\u6216\u7f29\u653e\u8fd9\u4e2a\u533a\u57df\uff0c\u4f7f\u5b83\u8986\u76d6\u76ee\u6807\u6587\u5b57"
-_RECOGNIZE_TEXT = "\u8bc6\u522b"
-_RECOGNIZING_TEXT = "\u8bc6\u522b\u4e2d..."
-_RESULT_PLACEHOLDER = "OCR \u8bc6\u522b\u7ed3\u679c"
+_HINT_TEXT = "拖动或缩放这个区域，使它覆盖目标文字"
+_TRANSLATE_TEXT = "翻译"
+_TRANSLATING_TEXT = "翻译中..."
+_RESULT_PLACEHOLDER = "翻译结果"
+_CLEAR_RESULT_TEXT = "清除译文"
 
 
-class _FloatingRecognizeButton(QPushButton):
+class _FloatingTranslateButton(QPushButton):
     def __init__(self, text: str) -> None:
         super().__init__(text, None)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
@@ -36,6 +45,9 @@ class _FloatingRecognizeButton(QPushButton):
 class CaptureRegionOverlay(QWidget):
     recognize_requested = Signal(object)
     region_committed = Signal(object)
+    interaction_started = Signal()
+    interaction_finished = Signal(object)
+    clear_requested = Signal()
 
     def __init__(self, initial_region: CaptureRegion) -> None:
         super().__init__(None)
@@ -50,18 +62,20 @@ class CaptureRegionOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
         self.setMinimumSize(*MIN_CAPTURE_SIZE)
-        self.setWindowTitle("TransProt OCR Region")
+        self.setWindowTitle("TransProt 翻译区域")
 
         self._hint_label = QLabel(_HINT_TEXT)
         self._hint_label.setStyleSheet("color: rgba(255, 255, 255, 200); font-size: 12px;")
 
-        self._recognize_button = _FloatingRecognizeButton(_RECOGNIZE_TEXT)
-        self._recognize_button.clicked.connect(self._emit_recognize_requested)
+        self._translate_button = _FloatingTranslateButton(_TRANSLATE_TEXT)
+        self._translate_button.clicked.connect(self._emit_recognize_requested)
 
         self._result_view = QPlainTextEdit()
         self._result_view.setReadOnly(True)
         self._result_view.setPlaceholderText(_RESULT_PLACEHOLDER)
         self._result_view.hide()
+        self._result_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._result_view.customContextMenuRequested.connect(self._show_result_context_menu)
         self._result_view.setStyleSheet(
             "QPlainTextEdit { background-color: rgba(9, 11, 16, 170); color: white; border: 1px solid rgba(255, 255, 255, 35); border-radius: 10px; padding: 8px; }"
         )
@@ -118,8 +132,8 @@ class CaptureRegionOverlay(QWidget):
         self.showNormal()
         self.show()
         self._sync_button_geometry()
-        self._recognize_button.show()
-        self._recognize_button.raise_()
+        self._translate_button.show()
+        self._translate_button.raise_()
         self.raise_()
         self.activateWindow()
         self.setFocus(Qt.ActiveWindowFocusReason)
@@ -128,7 +142,7 @@ class CaptureRegionOverlay(QWidget):
             self.isVisible(),
             self.geometry().getRect(),
             self.isActiveWindow(),
-            self._recognize_button.geometry().getRect(),
+            self._translate_button.geometry().getRect(),
         )
 
     def show_result(self, text: str, is_error: bool = False) -> None:
@@ -146,14 +160,17 @@ class CaptureRegionOverlay(QWidget):
         self._result_view.clear()
         self._result_view.hide()
 
+    def is_result_visible(self) -> bool:
+        return self._result_view.isVisible()
+
     def set_busy(self, busy: bool) -> None:
         logger.info("CaptureRegionOverlay busy state changed: %s", busy)
-        self._recognize_button.setEnabled(not busy)
-        self._recognize_button.setText(_RECOGNIZING_TEXT if busy else _RECOGNIZE_TEXT)
+        self._translate_button.setEnabled(not busy)
+        self._translate_button.setText(_TRANSLATING_TEXT if busy else _TRANSLATE_TEXT)
         self._sync_button_geometry()
 
     def hideEvent(self, event) -> None:
-        self._recognize_button.hide()
+        self._translate_button.hide()
         super().hideEvent(event)
 
     def moveEvent(self, event) -> None:
@@ -163,6 +180,13 @@ class CaptureRegionOverlay(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._sync_button_geometry()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self.is_result_visible():
+            self._show_clear_menu(event.globalPos())
+            event.accept()
+            return
+        super().contextMenuEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         super().paintEvent(event)
@@ -185,6 +209,7 @@ class CaptureRegionOverlay(QWidget):
             self._active_handle,
             self._press_geometry.getRect(),
         )
+        self.interaction_started.emit()
         event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -206,6 +231,7 @@ class CaptureRegionOverlay(QWidget):
         region = self.current_region()
         logger.info("CaptureRegionOverlay mouse release. committed_region=%s", region)
         self.region_committed.emit(region)
+        self.interaction_finished.emit(region)
         event.accept()
 
     def leaveEvent(self, event) -> None:
@@ -214,15 +240,27 @@ class CaptureRegionOverlay(QWidget):
 
     def _emit_recognize_requested(self) -> None:
         region = self.current_region()
-        logger.info("CaptureRegionOverlay recognize requested. region=%s", region)
+        logger.info("CaptureRegionOverlay translate requested. region=%s", region)
         self.recognize_requested.emit(region)
+
+    def _show_result_context_menu(self, pos: QPoint) -> None:
+        if not self.is_result_visible():
+            return
+        self._show_clear_menu(self._result_view.mapToGlobal(pos))
+
+    def _show_clear_menu(self, global_pos: QPoint) -> None:
+        menu = QMenu(self)
+        action = menu.addAction(_CLEAR_RESULT_TEXT)
+        selected = menu.exec(global_pos)
+        if selected == action:
+            self.clear_requested.emit()
 
     def _sync_button_geometry(self) -> None:
         if not self.geometry().isValid():
             return
-        button_size = self._recognize_button.sizeHint().expandedTo(_BUTTON_MIN_SIZE)
-        self._recognize_button.resize(button_size)
-        self._recognize_button.move(self._resolve_button_top_left(button_size))
+        button_size = self._translate_button.sizeHint().expandedTo(_BUTTON_MIN_SIZE)
+        self._translate_button.resize(button_size)
+        self._translate_button.move(self._resolve_button_top_left(button_size))
 
     def _resolve_button_top_left(self, button_size: QSize) -> QPoint:
         geometry = self.geometry()

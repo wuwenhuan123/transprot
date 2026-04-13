@@ -11,3 +11,8 @@ def merge_ocr_lines(lines: Iterable[str]) -> str:
 def normalize_translation_text(text: str) -> str:
     return "\n".join(part.rstrip() for part in text.replace("\r\n", "\n").split("\n")).strip()
 
+
+def normalize_source_compare_text(text: str) -> str:
+    normalized = normalize_translation_text(text)
+    return " ".join(normalized.split())
+

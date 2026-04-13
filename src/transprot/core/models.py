@@ -3,6 +3,12 @@
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
+DEFAULT_HOTKEY = "Ctrl+Alt+T"
+DEFAULT_TIMEOUT_SEC = 30
+DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_SOURCE_LANG = "auto"
+DEFAULT_TARGET_LANG = "zh-CN"
+
 
 class TranslationProvider(str, Enum):
     OPENAI_COMPATIBLE = "openai_compatible"
@@ -43,15 +49,16 @@ class CaptureRegion:
 
 @dataclass(slots=True)
 class AppConfig:
-    hotkey: str = "Ctrl+Alt+T"
+    hotkey: str = DEFAULT_HOTKEY
     translation_provider: TranslationProvider = TranslationProvider.OPENAI_COMPATIBLE
     api_base_url: str = ""
     api_key: str = ""
     model: str = ""
-    timeout_sec: int = 30
-    log_level: str = "INFO"
-    source_lang: str = "auto"
-    target_lang: str = "zh-CN"
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC
+    log_level: str = DEFAULT_LOG_LEVEL
+    source_lang: str = DEFAULT_SOURCE_LANG
+    target_lang: str = DEFAULT_TARGET_LANG
+    auto_mode_enabled: bool = False
     capture_region: CaptureRegion | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -67,15 +74,16 @@ class AppConfig:
         provider = payload.get("translation_provider", TranslationProvider.OPENAI_COMPATIBLE.value)
         capture_region_payload = payload.get("capture_region")
         return cls(
-            hotkey=str(payload.get("hotkey", cls.hotkey)),
+            hotkey=str(payload.get("hotkey", DEFAULT_HOTKEY)),
             translation_provider=TranslationProvider(str(provider)),
             api_base_url=str(payload.get("api_base_url", "")),
             api_key=str(payload.get("api_key", "")),
             model=str(payload.get("model", "")),
-            timeout_sec=int(payload.get("timeout_sec", 30)),
-            log_level=str(payload.get("log_level", "INFO")),
-            source_lang=str(payload.get("source_lang", "auto")),
-            target_lang=str(payload.get("target_lang", "zh-CN")),
+            timeout_sec=int(payload.get("timeout_sec", DEFAULT_TIMEOUT_SEC)),
+            log_level=str(payload.get("log_level", DEFAULT_LOG_LEVEL)),
+            source_lang=str(payload.get("source_lang", DEFAULT_SOURCE_LANG)),
+            target_lang=str(payload.get("target_lang", DEFAULT_TARGET_LANG)),
+            auto_mode_enabled=bool(payload.get("auto_mode_enabled", False)),
             capture_region=(
                 CaptureRegion.from_dict(capture_region_payload)
                 if isinstance(capture_region_payload, dict)
