@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import sys
@@ -13,11 +13,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run environment diagnostics without launching the desktop UI.",
     )
+    parser.add_argument(
+        "--ocr-worker-stdio",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
 
     if args.self_check:
         run_self_check()
         return 0
+    if args.ocr_worker_stdio:
+        from transprot.services.ocr_worker import main as ocr_worker_main
+
+        return ocr_worker_main(["--stdio"])
 
     try:
         from transprot.app import launch_app

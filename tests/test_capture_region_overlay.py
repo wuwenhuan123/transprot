@@ -84,6 +84,24 @@ class CaptureRegionOverlayTests(unittest.TestCase):
         self.assertFalse(overlay.geometry().intersects(overlay._translate_button.geometry()))
         self.assertGreaterEqual(overlay._translate_button.geometry().right(), overlay.geometry().right() - 40)
 
+    def test_capture_preview_suppression_keeps_overlay_visible_when_capture_exclusion_is_available(self) -> None:
+        overlay = self._create_overlay(x=160, y=180, width=420, height=180)
+        overlay.show_region()
+        self._app.processEvents()
+
+        overlay._capture_exclusion_supported = True
+        overlay.show_result("??")
+        overlay.set_capture_preview_suppressed(True)
+
+        self.assertTrue(overlay._translate_button.isVisible())
+        self.assertTrue(overlay._result_view.isVisible())
+        self.assertEqual(overlay.windowOpacity(), 1.0)
+
+        overlay.set_capture_preview_suppressed(False)
+        self.assertTrue(overlay._translate_button.isVisible())
+        self.assertTrue(overlay._result_view.isVisible())
+        self.assertEqual(overlay.windowOpacity(), 1.0)
+
     def test_reset_to_idle_clears_result_and_restores_button_text(self) -> None:
         overlay = self._create_overlay(x=160, y=180, width=420, height=180)
         overlay.show_result("\u8bd1\u6587")

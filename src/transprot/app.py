@@ -266,9 +266,11 @@ class TransProtDesktopApp(QObject):
         self._on_region_committed(region)
         if not self._capture_overlay_hidden_by_user:
             self._capture_overlay.show_region()
+            self._capture_overlay.set_capture_preview_suppressed(True)
 
     def _on_recognition_started(self, region: CaptureRegion) -> None:
         logger.info("Recognition started. region=%s", region)
+        self._capture_overlay.set_capture_preview_suppressed(False)
         if self._capture_overlay_hidden_by_user:
             return
         self._capture_overlay.show_region()
@@ -294,6 +296,7 @@ class TransProtDesktopApp(QObject):
 
     def _on_error(self, message: str) -> None:
         logger.warning("Application error: %s", message)
+        self._capture_overlay.set_capture_preview_suppressed(False)
         if not self._capture_overlay_hidden_by_user:
             self._capture_overlay.show_region()
             self._capture_overlay.show_result(message, is_error=True)
@@ -301,6 +304,7 @@ class TransProtDesktopApp(QObject):
 
     def _on_capture_finished(self) -> None:
         logger.info("Capture finished")
+        self._capture_overlay.set_capture_preview_suppressed(False)
         self._capture_overlay.set_busy(False)
         if not self._capture_overlay.isVisible() and not self._capture_overlay_hidden_by_user:
             self._capture_overlay.show_region()

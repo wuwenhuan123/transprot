@@ -92,6 +92,25 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(config.model, DEFAULT_OPENAI_MODEL)
         self.assertEqual(config.target_lang, "zh-CN")
 
+    def test_app_config_normalizes_string_provider_before_save(self) -> None:
+        workspace_tmp = Path(__file__).resolve().parents[1] / ".tmp-tests"
+        workspace_tmp.mkdir(exist_ok=True)
+        config_path = workspace_tmp / "config-provider-string.json"
+        if config_path.exists():
+            config_path.unlink()
+
+        store = AppConfigStore(config_path)
+        config = AppConfig(translation_provider="openai_compatible", api_key="secret")
+
+        store.save(config)
+        loaded = store.load()
+
+        self.assertEqual(loaded.translation_provider, TranslationProvider.OPENAI_COMPATIBLE)
+
+        if config_path.exists():
+            config_path.unlink()
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
+from transprot.core.errors import ConfigurationError
+from transprot.core.models import AppConfig
 from transprot.services.translation import (
+    OpenAICompatibleTranslator,
     _extract_openai_stream_text,
     _extract_openai_text,
     _normalize_openai_url,
@@ -30,12 +33,19 @@ class TranslationTests(unittest.TestCase):
         self.assertEqual(_extract_openai_text(payload), "hello")
 
     def test_extract_openai_stream_text(self) -> None:
-        payload = {"choices": [{"delta": {"content": "你"}}]}
-        self.assertEqual(_extract_openai_stream_text(payload), "你")
+        payload = {"choices": [{"delta": {"content": "?"}}]}
+        self.assertEqual(_extract_openai_stream_text(payload), "?")
 
     def test_walk_for_text_finds_nested_translation(self) -> None:
         payload = {"data": {"translation": "translated"}}
         self.assertEqual(_walk_for_text(payload), "translated")
+
+    def test_openai_translator_requires_api_key(self) -> None:
+        translator = OpenAICompatibleTranslator()
+        config = AppConfig(api_key="")
+
+        with self.assertRaisesRegex(ConfigurationError, "API ??"):
+            translator.translate("hello", config)
 
 
 if __name__ == "__main__":

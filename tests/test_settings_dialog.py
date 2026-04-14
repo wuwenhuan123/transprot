@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import unittest
+from unittest.mock import patch
 
 from transprot.core.models import (
     AppConfig,
@@ -72,6 +73,14 @@ class SettingsDialogTests(unittest.TestCase):
         self.assertEqual(dialog._base_url_edit.text(), DEFAULT_OPENAI_BASE_URL)
         self.assertEqual(dialog._model_edit.text(), DEFAULT_OPENAI_MODEL)
 
+    def test_build_config_normalizes_provider_to_enum(self) -> None:
+        dialog = SettingsDialog(AppConfig())
+        dialog._provider_combo.setCurrentIndex(dialog._provider_combo.findData(TranslationProvider.OPENAI_COMPATIBLE))
+
+        rebuilt = dialog.build_config()
+
+        self.assertEqual(rebuilt.translation_provider, TranslationProvider.OPENAI_COMPATIBLE)
+
     def test_build_config_falls_back_to_default_clear_shortcut(self) -> None:
         dialog = SettingsDialog(AppConfig())
         dialog._clear_shortcut_edit.setKeySequence(QKeySequence())
@@ -87,6 +96,32 @@ class SettingsDialogTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "\u4e0d\u80fd\u76f8\u540c"):
             dialog._validated_config()
+
+    def test_validation_rejects_missing_api_key_for_openai_provider(self) -> None:
+        dialog = SettingsDialog(
+            AppConfig(
+                translation_provider=TranslationProvider.OPENAI_COMPATIBLE,
+                api_base_url=DEFAULT_OPENAI_BASE_URL,
+                api_key="",
+                model=DEFAULT_OPENAI_MODEL,
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "API \u5bc6\u94a5"):
+            dialog._validated_config()
+
+    def test_apply_config_shows_available_ocr_models(self) -> None:
+        with patch(
+            "transprot.ui.settings_dialog.describe_available_ocr_models",
+            return_value="ppocr-v5-server（内置离线模型）",
+        ):
+            dialog = SettingsDialog(AppConfig())
+            dialog.apply_config(AppConfig())
+
+        self.assertEqual(
+            dialog._ocr_models_value.text(),
+            "ppocr-v5-server（内置离线模型）",
+        )
 
 
 if __name__ == "__main__":

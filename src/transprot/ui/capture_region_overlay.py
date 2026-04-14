@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import ctypes
 import logging
 import sys
-from ctypes import wintypes
+import ctypes
+
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QContextMenuEvent, QFont, QMouseEvent, QPainter, QPaintEvent, QPen
@@ -13,6 +13,25 @@ from transprot.core.layout import MIN_CAPTURE_SIZE, clamp_capture_region
 from transprot.core.models import CaptureRegion
 
 logger = logging.getLogger(__name__)
+
+
+_WDA_NONE = 0
+_WDA_EXCLUDEFROMCAPTURE = 0x00000011
+
+
+def _set_window_excluded_from_capture(widget: QWidget, excluded: bool) -> bool:
+    if sys.platform != "win32":
+        return False
+    hwnd = int(widget.winId())
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        affinity = _WDA_EXCLUDEFROMCAPTURE if excluded else _WDA_NONE
+        return bool(user32.SetWindowDisplayAffinity(hwnd, affinity))
+    except Exception:
+        logger.exception("Failed to update capture exclusion. widget=%s excluded=%s", widget, excluded)
+        return False
 
 _RESIZE_MARGIN = 10
 _BUTTON_GAP = 10
@@ -24,8 +43,6 @@ _CLEAR_TRANSLATION_TEXT = "\u6e05\u9664\u8bd1\u6587"
 _HIDE_OVERLAY_TEXT = "\u9690\u85cf\u7ffb\u8bd1\u6846"
 _OPEN_SETTINGS_TEXT = "\u8bbe\u7f6e"
 _OVERLAY_TITLE = "TransProt \u7ffb\u8bd1\u533a\u57df"
-_WDA_NONE = 0x0
-_WDA_EXCLUDEFROMCAPTURE = 0x11
 _MIN_RESULT_FONT = 9.5
 _MAX_RESULT_FONT = 16.0
 
@@ -59,6 +76,9 @@ class CaptureRegionOverlay(QWidget):
         self._press_geometry = QRect()
         self._interaction_screen_name = initial_region.screen_name
         self._interaction_screen_rect = initial_region.rect
+        self._capture_preview_suppressed = False
+        self._result_visible_before_capture = False
+        self._capture_exclusion_supported: bool | None = None
 
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -137,7 +157,7 @@ class CaptureRegionOverlay(QWidget):
         self._translate_button.show()
         self._translate_button.raise_()
         self.raise_()
-        self._apply_capture_exclusion()
+        self._ensure_capture_exclusion_enabled()
         logger.info(
             "CaptureRegionOverlay shown. visible=%s geometry=%s button_geometry=%s",
             self.isVisible(),
@@ -258,8 +278,6 @@ class CaptureRegionOverlay(QWidget):
         button_size = self._translate_button.sizeHint().expandedTo(_BUTTON_MIN_SIZE)
         self._translate_button.resize(button_size)
         self._translate_button.move(self._resolve_button_top_left(button_size))
-        if self._translate_button.isVisible():
-            self._apply_capture_exclusion()
 
     def _resolve_button_top_left(self, button_size: QSize) -> QPoint:
         geometry = self.geometry()
@@ -383,6 +401,12 @@ class CaptureRegionOverlay(QWidget):
         )
         return QRect(region.x, region.y, region.width, region.height)
 
+    def _ensure_capture_exclusion_enabled(self) -> bool:
+        overlay_ok = _set_window_excluded_from_capture(self, True)
+        button_ok = _set_window_excluded_from_capture(self._translate_button, True)
+        self._capture_exclusion_supported = overlay_ok and button_ok
+        return self._capture_exclusion_supported
+
     def _show_result_context_menu(self, point: QPoint) -> None:
         self._show_overlay_menu(self._result_view.mapToGlobal(point))
 
@@ -395,6 +419,28 @@ class CaptureRegionOverlay(QWidget):
             self.hide_requested.emit()
         elif selected_action == actions["settings"]:
             self.settings_requested.emit()
+
+    def set_capture_preview_suppressed(self, suppressed: bool) -> None:
+        if self._capture_preview_suppressed == suppressed:
+            return
+        self._capture_preview_suppressed = suppressed
+        if self._capture_exclusion_supported is None:
+            self._ensure_capture_exclusion_enabled()
+        if self._capture_exclusion_supported:
+            return
+        if suppressed:
+            self._result_visible_before_capture = self._result_view.isVisible()
+            self._result_view.hide()
+            self._translate_button.hide()
+            self.setWindowOpacity(0.0)
+        else:
+            self.setWindowOpacity(1.0)
+            self._translate_button.show()
+            if self._result_visible_before_capture and self._result_view.toPlainText().strip():
+                self._result_view.show()
+            self._result_visible_before_capture = False
+            self._sync_button_geometry()
+        self.update()
 
     def _create_overlay_menu(self) -> tuple[QMenu, dict[str, object]]:
         menu = QMenu(self)
@@ -412,10 +458,6 @@ class CaptureRegionOverlay(QWidget):
     def _exec_overlay_menu(self, menu: QMenu, global_pos: QPoint):
         return menu.exec(global_pos)
 
-    def _apply_capture_exclusion(self) -> None:
-        self._set_exclude_from_capture(self, enabled=True)
-        self._set_exclude_from_capture(self._translate_button, enabled=True)
-
     def _update_result_font(self) -> None:
         font = QFont(self._result_view.font())
         font.setPointSizeF(self._compute_result_font_point_size())
@@ -426,14 +468,3 @@ class CaptureRegionOverlay(QWidget):
         available_height = max(self._result_view.viewport().height(), self.height() - 32, 1)
         proposed = min(available_width / 80.0, available_height / 12.0)
         return max(_MIN_RESULT_FONT, min(proposed, _MAX_RESULT_FONT))
-
-    @staticmethod
-    def _set_exclude_from_capture(widget: QWidget, enabled: bool) -> None:
-        if sys.platform != "win32":
-            return
-        try:
-            hwnd = int(widget.winId())
-            affinity = _WDA_EXCLUDEFROMCAPTURE if enabled else _WDA_NONE
-            ctypes.windll.user32.SetWindowDisplayAffinity(wintypes.HWND(hwnd), affinity)
-        except Exception:
-            logger.exception("Failed to update capture exclusion for widget=%s", widget)

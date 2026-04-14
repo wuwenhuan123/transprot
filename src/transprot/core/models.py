@@ -19,6 +19,15 @@ DEFAULT_SOURCE_LANG = "auto"
 DEFAULT_TARGET_LANG = "zh-CN"
 
 
+def coerce_translation_provider(value: object) -> TranslationProvider:
+    if isinstance(value, TranslationProvider):
+        return value
+    try:
+        return TranslationProvider(str(value).strip())
+    except ValueError:
+        return TranslationProvider.OPENAI_COMPATIBLE
+
+
 @dataclass(slots=True)
 class CaptureRegion:
     screen_name: str
@@ -65,9 +74,13 @@ class AppConfig:
     target_lang: str = DEFAULT_TARGET_LANG
     capture_region: CaptureRegion | None = None
 
+    def __post_init__(self) -> None:
+        self.translation_provider = coerce_translation_provider(self.translation_provider)
+
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
-        payload["translation_provider"] = self.translation_provider.value
+        provider = coerce_translation_provider(self.translation_provider)
+        payload["translation_provider"] = provider.value
         payload["capture_region"] = (
             self.capture_region.to_dict() if self.capture_region is not None else None
         )
@@ -77,10 +90,7 @@ class AppConfig:
     def from_dict(cls, payload: dict[str, object]) -> "AppConfig":
         provider = payload.get("translation_provider", TranslationProvider.OPENAI_COMPATIBLE.value)
         capture_region_payload = payload.get("capture_region")
-        try:
-            translation_provider = TranslationProvider(str(provider))
-        except ValueError:
-            translation_provider = TranslationProvider.OPENAI_COMPATIBLE
+        translation_provider = coerce_translation_provider(provider)
         return cls(
             hotkey=_sanitize_saved_string(payload.get("hotkey"), DEFAULT_HOTKEY),
             clear_hotkey=_sanitize_saved_string(payload.get("clear_hotkey"), DEFAULT_CLEAR_HOTKEY),

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QKeySequenceEdit,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QSpinBox,
@@ -21,7 +22,9 @@ from transprot.core.models import (
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
     TranslationProvider,
+    coerce_translation_provider,
 )
+from transprot.services.ocr import describe_available_ocr_models
 
 _TARGET_LANG_CHOICES = [
     ("\u7b80\u4f53\u4e2d\u6587", "zh-CN"),
@@ -44,11 +47,13 @@ _BASE_URL_LABEL = "\u63a5\u53e3\u5730\u5740"
 _API_KEY_LABEL = "API \u5bc6\u94a5"
 _MODEL_LABEL = "\u6a21\u578b"
 _TIMEOUT_LABEL = "\u8d85\u65f6"
+_OCR_MODELS_LABEL = "OCR \u6a21\u578b"
 _SECONDS_SUFFIX = " \u79d2"
 _TIMEOUT_ERROR = "\u8d85\u65f6\u65f6\u95f4\u4e0d\u80fd\u5c0f\u4e8e 5 \u79d2\u3002"
 _TARGET_LANG_ERROR = "\u8bf7\u5148\u586b\u5199\u76ee\u6807\u8bed\u8a00\u3002"
 _SHORTCUT_CONFLICT_ERROR = "\u7ffb\u8bd1\u5feb\u6377\u952e\u548c\u6e05\u9664\u5feb\u6377\u952e\u4e0d\u80fd\u76f8\u540c\u3002"
 _BASE_URL_ERROR = "\u8bf7\u5148\u586b\u5199\u963f\u91cc\u4e91\u517c\u5bb9\u63a5\u53e3\u5730\u5740\u3002"
+_API_KEY_ERROR = "\u8bf7\u5148\u586b\u5199 API \u5bc6\u94a5\u3002"
 _MODEL_ERROR = "\u8bf7\u5148\u586b\u5199\u6a21\u578b\u540d\u79f0\u3002"
 
 
@@ -81,6 +86,8 @@ class SettingsDialog(QDialog):
         self._timeout_spin = QSpinBox()
         self._timeout_spin.setRange(5, 180)
         self._timeout_spin.setSuffix(_SECONDS_SUFFIX)
+        self._ocr_models_value = QLabel()
+        self._ocr_models_value.setWordWrap(True)
 
         form_layout = QFormLayout()
         form_layout.addRow(_PROVIDER_LABEL, self._provider_combo)
@@ -91,6 +98,7 @@ class SettingsDialog(QDialog):
         form_layout.addRow(_API_KEY_LABEL, self._api_key_edit)
         form_layout.addRow(_MODEL_LABEL, self._model_edit)
         form_layout.addRow(_TIMEOUT_LABEL, self._timeout_spin)
+        form_layout.addRow(_OCR_MODELS_LABEL, self._ocr_models_value)
 
         button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         button_box.button(QDialogButtonBox.Save).setText(_SAVE_TEXT)
@@ -120,10 +128,11 @@ class SettingsDialog(QDialog):
         self._api_key_edit.setText(config.api_key)
         self._model_edit.setText(config.model)
         self._timeout_spin.setValue(config.timeout_sec)
+        self._ocr_models_value.setText(describe_available_ocr_models())
         self._update_form_state()
 
     def build_config(self) -> AppConfig:
-        provider = self._provider_combo.currentData()
+        provider = coerce_translation_provider(self._provider_combo.currentData())
         model_text = self._model_edit.text().strip()
         return AppConfig(
             hotkey=_shortcut_text(self._translate_shortcut_edit, DEFAULT_HOTKEY),
@@ -140,7 +149,7 @@ class SettingsDialog(QDialog):
         )
 
     def _update_form_state(self) -> None:
-        provider = self._provider_combo.currentData()
+        provider = coerce_translation_provider(self._provider_combo.currentData())
         is_openai = provider == TranslationProvider.OPENAI_COMPATIBLE
         self._model_edit.setEnabled(is_openai)
         if is_openai and not self._base_url_edit.text().strip():
@@ -183,6 +192,8 @@ class SettingsDialog(QDialog):
         if config.translation_provider == TranslationProvider.OPENAI_COMPATIBLE:
             if not config.api_base_url.strip():
                 raise ValueError(_BASE_URL_ERROR)
+            if not config.api_key.strip():
+                raise ValueError(_API_KEY_ERROR)
             if not config.model.strip():
                 raise ValueError(_MODEL_ERROR)
         return config

@@ -4,6 +4,7 @@ import importlib.util
 import json
 
 from transprot.core.config import AppConfigStore, resolve_config_path, resolve_log_dir
+from transprot.services.ocr import list_available_ocr_models
 
 
 def _dependency_state() -> dict[str, bool]:
@@ -27,5 +28,6 @@ def run_self_check() -> None:
         "clear_hotkey": config.clear_hotkey,
         "api_base_url": config.api_base_url,
         "model": config.model,
+        "available_ocr_models": list_available_ocr_models(),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

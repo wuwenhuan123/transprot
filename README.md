@@ -1,17 +1,14 @@
 ﻿# TransProt
 
-Windows 轻量级屏幕 OCR 工具 MVP。
+Windows 轻量级桌面 OCR / 翻译工具。
 
-当前版本实现了这些能力：
+当前版本包含这些能力：
 
 - 系统托盘常驻
-- 应用启动后立即显示可拖拽、可缩放的半透明框选区域
-- 点击框选区域中的 `识别` 按钮后，执行截图 + OCR 识别
-- 识别结果直接显示在同一块框选区域内
-- 设置页保留原有翻译配置，便于后续恢复真实翻译能力
+- 启动后立即显示可拖拽、可缩放的半透明翻译框
+- 点击翻译按钮后执行截图、OCR、翻译，并把译文显示回框内
+- 设置页支持 API Key、模型、目标语言、超时与快捷键持久化
 - `--self-check` 运行环境自检
-
-> 当前版本先聚焦 OCR 识别，主流程不会调用翻译接口。
 
 ## Quick Start
 
@@ -21,22 +18,64 @@ Windows 轻量级屏幕 OCR 工具 MVP。
 4. 运行自检：`python -m transprot --self-check`
 5. 启动桌面应用：`python -m transprot`
 
-## 交互方式
+## 常用命令
 
-1. 启动应用后，桌面上会出现一个半透明矩形区域。
-2. 拖拽或缩放这个区域，使其覆盖到你要识别的文字。
-3. 点击区域右上角的 `识别` 按钮。
-4. 程序会短暂隐藏该区域、完成截图和 OCR，再把识别结果显示回区域内。
+- 开发启动：`powershell -ExecutionPolicy Bypass -File .\scripts\run-dev.ps1`
+- 绿色版构建：`python -m PyInstaller --noconfirm .\packaging\transprot.spec`
+- 安装包构建：`powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1`
 
-## 翻译配置说明
+## 打包说明
 
-设置页中的 Provider、Endpoint、API key、Model、Timeout 仍会保留并持久化，
-但当前 OCR-only 版本不会在主流程中使用这些配置。
-
-## 打包
-
-安装打包依赖后运行：
+### 1. 安装打包依赖
 
 ```powershell
-python -m PyInstaller --noconfirm --windowed --onedir --name TransProt --collect-all paddleocr --paths src src/transprot/__main__.py
+pip install -e .[desktop,ocr,build]
 ```
+
+### 2. 构建绿色版目录
+
+```powershell
+python -m PyInstaller --noconfirm .\packaging\transprot.spec
+```
+
+输出目录：
+
+```text
+dist\TransProt\TransProt.exe
+```
+
+### 3. 构建 Windows 安装包
+
+先安装 Inno Setup 6，然后执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
+```
+
+输出目录：
+
+```text
+installer-output\TransProt-Setup.exe
+```
+
+### 4. 首次运行说明
+
+- 安装包不会内置 Paddle OCR 模型。
+- 第一次执行 OCR 时，程序会联网下载模型到本地缓存目录。
+- 首次识别可能比后续识别更慢，这是正常现象。
+
+### 5. 发布版运行时目录
+
+- 配置文件：`%APPDATA%\TransProt\config.json`
+- 日志目录：`%LOCALAPPDATA%\TransProt\logs`
+- OCR 缓存：`%LOCALAPPDATA%\TransProt\runtime` 下相关目录
+
+### 6. 无安装包时仅构建绿色版
+
+如果当前机器没有安装 Inno Setup，可以先执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -SkipInstaller
+```
+
+这样会只产出 `dist\TransProt\`，不生成安装包。

@@ -13,13 +13,21 @@ from transprot.core.text import normalize_translation_text
 
 ProgressCallback = Callable[[str], None]
 
+_REQUEST_FAILED = "翻译请求失败。"
+_NO_TRANSLATED_TEXT = "翻译接口没有返回可用的译文。"
+_OPENAI_BASE_URL_ERROR = "请先填写阿里云兼容接口地址。"
+_OPENAI_API_KEY_ERROR = "请先填写 API 密钥。"
+_OPENAI_MODEL_ERROR = "请先填写模型名称。"
+_BASIC_HTTP_BASE_URL_ERROR = "请先填写通用翻译接口地址。"
+_BASIC_HTTP_NO_TEXT_ERROR = "通用翻译接口没有返回可用的译文。"
+
 
 def build_translation_prompt(text: str, target_lang: str) -> list[dict[str, str]]:
     user_prompt = (
-        "你是屏幕翻译助手。"
-        f"请自动识别原文语言，并把内容翻译成 {target_lang}。"
-        "可以纠正少量 OCR 造成的空格、断句和换行噪声。"
-        "只返回译文，不要解释，尽量保留段落、列表和换行。\n\n"
+        "你是屏幕翻译助手。\n"
+        f"请自动识别原文语言，并把内容翻译成 {target_lang}。\n"
+        "可以纠正少量 OCR 造成的空格、断句和换行噪声。\n"
+        "只返回译文，不要解释，并尽量保留段落、列表和换行。\n\n"
         "原文：\n"
         f"{text}"
     )
@@ -57,7 +65,7 @@ def _post_json(
                 break
         time.sleep(0.8)
 
-    raise TranslationError(str(last_error or "翻译请求失败。"))
+    raise TranslationError(str(last_error or _REQUEST_FAILED))
 
 
 def _stream_json_events(
@@ -114,7 +122,7 @@ def _stream_json_events(
             break
         time.sleep(0.8)
 
-    raise TranslationError(str(last_error or "翻译请求失败。"))
+    raise TranslationError(str(last_error or _REQUEST_FAILED))
 
 
 def _http_error_message(exc: urllib.error.HTTPError) -> str:
@@ -148,7 +156,7 @@ def _payload_error_message(payload: Any) -> str | None:
 def _normalize_openai_url(base_url: str) -> str:
     cleaned = base_url.strip().rstrip("/")
     if not cleaned:
-        raise ConfigurationError("请先填写接口地址。")
+        raise ConfigurationError(_OPENAI_BASE_URL_ERROR)
     if cleaned.endswith("/chat/completions"):
         return cleaned
     if cleaned.endswith("/v1"):
@@ -167,7 +175,7 @@ def _extract_openai_text(payload: dict[str, Any]) -> str:
     if isinstance(output_text, str):
         return normalize_translation_text(output_text)
 
-    raise TranslationError("翻译接口没有返回可用的译文。")
+    raise TranslationError(_NO_TRANSLATED_TEXT)
 
 
 def _extract_openai_stream_text(payload: dict[str, Any]) -> str:
@@ -237,16 +245,16 @@ class OpenAICompatibleTranslator(BaseTranslator):
         config: AppConfig,
         progress_callback: ProgressCallback | None = None,
     ) -> TranslationResult:
-        if not config.model:
-            raise ConfigurationError("请先填写模型名称。")
+        if not config.model.strip():
+            raise ConfigurationError(_OPENAI_MODEL_ERROR)
+        if not config.api_key.strip():
+            raise ConfigurationError(_OPENAI_API_KEY_ERROR)
 
         start = time.perf_counter()
-        headers = {}
-        if config.api_key:
-            headers["Authorization"] = f"Bearer {config.api_key}"
+        headers = {"Authorization": f"Bearer {config.api_key.strip()}"}
         url = _normalize_openai_url(config.api_base_url)
         payload = {
-            "model": config.model,
+            "model": config.model.strip(),
             "messages": build_translation_prompt(text, config.target_lang),
             "temperature": 0,
             "stream": bool(progress_callback),
@@ -277,7 +285,7 @@ class OpenAICompatibleTranslator(BaseTranslator):
                 progress_callback(normalize_translation_text("".join(parts)))
             translated = normalize_translation_text("".join(parts))
             if not translated:
-                raise TranslationError("翻译接口没有返回可用的译文。")
+                raise TranslationError(_NO_TRANSLATED_TEXT)
 
         elapsed = int((time.perf_counter() - start) * 1000)
         return TranslationResult(
@@ -298,7 +306,7 @@ class BasicHttpTranslator(BaseTranslator):
         progress_callback: ProgressCallback | None = None,
     ) -> TranslationResult:
         if not config.api_base_url.strip():
-            raise ConfigurationError("请先填写通用翻译接口地址。")
+            raise ConfigurationError(_BASIC_HTTP_BASE_URL_ERROR)
 
         start = time.perf_counter()
         headers = {}
@@ -320,7 +328,7 @@ class BasicHttpTranslator(BaseTranslator):
         )
         translated = _walk_for_text(response)
         if not translated:
-            raise TranslationError("通用翻译接口没有返回可用的译文。")
+            raise TranslationError(_BASIC_HTTP_NO_TEXT_ERROR)
         translated = normalize_translation_text(translated)
         if progress_callback is not None:
             progress_callback(translated)

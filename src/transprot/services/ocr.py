@@ -4,6 +4,7 @@ import importlib.util
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -26,10 +27,17 @@ _DEFAULT_UNAVAILABLE_MESSAGE = (
 )
 _FAST_MODEL_PROFILE = "ppocr-v4-mobile"
 _SERVER_FALLBACK_PROFILE = "ppocr-v5-server"
-_DEFAULT_REQUEST_TIMEOUT_SEC = 12
-_DEFAULT_WARMUP_TIMEOUT_SEC = 180
+_DEFAULT_REQUEST_TIMEOUT_SEC = 120
+_DEFAULT_WARMUP_TIMEOUT_SEC = 300
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+_OCR_PROFILE_REQUIREMENTS = {
+    _FAST_MODEL_PROFILE: ("PP-OCRv4_mobile_det", "PP-OCRv4_mobile_rec"),
+}
+_OCR_PROFILE_SOURCE_LABELS = {
+    "bundled": "\u5185\u7f6e\u79bb\u7ebf\u6a21\u578b",
+    "cache": "\u672c\u5730\u7f13\u5b58",
+}
 
 def _runtime_root_candidates() -> list[Path]:
     return [
@@ -46,6 +54,77 @@ def _prepare_runtime_root() -> Path | None:
             continue
         return candidate
     return None
+
+
+def _bundled_offline_ocr_root() -> Path | None:
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(Path(meipass) / "offline-ocr-models")
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "offline-ocr-models")
+        candidates.append(exe_dir / "_internal" / "offline-ocr-models")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _seed_offline_models(paddlex_cache_dir: Path) -> None:
+    bundled_root = _bundled_offline_ocr_root()
+    if bundled_root is None:
+        return
+
+    target_root = paddlex_cache_dir / "official_models"
+    target_root.mkdir(parents=True, exist_ok=True)
+    for source_dir in bundled_root.iterdir():
+        if not source_dir.is_dir():
+            continue
+        target_dir = target_root / source_dir.name
+        if target_dir.exists():
+            continue
+        try:
+            shutil.copytree(source_dir, target_dir)
+            logger.info("Seeded bundled OCR model. source=%s target=%s", source_dir, target_dir)
+        except OSError as exc:
+            logger.warning("Failed to seed bundled OCR model. source=%s error=%s", source_dir, exc)
+
+
+def list_available_ocr_models(
+    search_roots: Sequence[tuple[Path, str]] | None = None,
+) -> list[str]:
+    if search_roots is None:
+        _configure_paddle_environment()
+        search_roots = []
+        bundled_root = _bundled_offline_ocr_root()
+        if bundled_root is not None:
+            search_roots.append((bundled_root, "bundled"))
+        cache_root = Path(os.environ["PADDLE_PDX_CACHE_HOME"]) / "official_models"
+        if cache_root.exists():
+            search_roots.append((cache_root, "cache"))
+
+    available: list[str] = []
+    seen_profiles: set[str] = set()
+    for root, source_key in search_roots:
+        if not root.exists():
+            continue
+        for profile_name, required_dirs in _OCR_PROFILE_REQUIREMENTS.items():
+            if profile_name in seen_profiles:
+                continue
+            if all((root / required_dir).exists() for required_dir in required_dirs):
+                source_label = _OCR_PROFILE_SOURCE_LABELS.get(source_key, source_key)
+                available.append(f"{profile_name}\uff08{source_label}\uff09")
+                seen_profiles.add(profile_name)
+    return available
+
+
+def describe_available_ocr_models() -> str:
+    available = list_available_ocr_models()
+    if not available:
+        return "\u672a\u53d1\u73b0\u53ef\u7528 OCR \u6a21\u578b\uff0c\u9996\u6b21\u8bc6\u522b\u65f6\u4f1a\u81ea\u52a8\u51c6\u5907\u3002"
+    return "\u3001".join(available)
 
 
 def _configure_paddle_environment() -> None:
@@ -73,6 +152,7 @@ def _configure_paddle_environment() -> None:
     os.environ.setdefault("TMP", str(temp_dir))
     os.environ.setdefault("PADDLE_HOME", str(paddle_home_dir))
     os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(paddlex_cache_dir))
+    _seed_offline_models(paddlex_cache_dir)
 
 
 def _missing_dependency_message(module_name: str | None = None) -> str:
@@ -205,17 +285,11 @@ class PaddleOCRService(BaseOCRService):
                 {
                     **base_options,
                     "lang": "ch",
+                    "ocr_version": "PP-OCRv4",
                     "text_detection_model_name": "PP-OCRv4_mobile_det",
                     "text_recognition_model_name": "PP-OCRv4_mobile_rec",
                     "text_det_limit_side_len": 640,
                     "text_det_limit_type": "max",
-                },
-            ),
-            (
-                _SERVER_FALLBACK_PROFILE,
-                {
-                    **base_options,
-                    "lang": "ch",
                 },
             ),
         ]
@@ -236,8 +310,12 @@ class PaddleOCRService(BaseOCRService):
         except Exception as exc:
             raise OCRUnavailableError(f"Paddle OCR \u8fd0\u884c\u73af\u5883\u521d\u59cb\u5316\u5931\u8d25\uff1a{exc}") from exc
 
+        available_profile_names = {item.split("\uff08", 1)[0] for item in list_available_ocr_models()}
         errors: list[str] = []
         for profile_name, profile_options in self._engine_profiles():
+            if profile_name not in available_profile_names:
+                errors.append(f"{profile_name}: \u672a\u53d1\u73b0\u53ef\u7528\u7684\u79bb\u7ebf\u6a21\u578b\u6587\u4ef6")
+                continue
             try:
                 engine = PaddleOCR(**profile_options)
             except ModuleNotFoundError as exc:
@@ -444,8 +522,14 @@ class SubprocessOCRService(BaseOCRService):
             return process
         return self._start_worker_locked()
 
+    @staticmethod
+    def _build_worker_command() -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable, "--ocr-worker-stdio"]
+        return [sys.executable, "-m", "transprot.services.ocr_worker", "--stdio"]
+
     def _start_worker_locked(self) -> subprocess.Popen[str]:
-        command = [sys.executable, "-m", "transprot.services.ocr_worker", "--stdio"]
+        command = self._build_worker_command()
         env = os.environ.copy()
         try:
             process = subprocess.Popen(
