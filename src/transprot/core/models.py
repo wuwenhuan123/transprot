@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -7,6 +7,16 @@ from enum import Enum
 class TranslationProvider(str, Enum):
     OPENAI_COMPATIBLE = "openai_compatible"
     BASIC_HTTP = "basic_http"
+
+
+DEFAULT_HOTKEY = "Ctrl+Alt+T"
+DEFAULT_CLEAR_HOTKEY = "Ctrl+Alt+C"
+DEFAULT_OPENAI_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DEFAULT_OPENAI_MODEL = "qwen-mt-flash"
+DEFAULT_TIMEOUT_SEC = 60
+DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_SOURCE_LANG = "auto"
+DEFAULT_TARGET_LANG = "zh-CN"
 
 
 @dataclass(slots=True)
@@ -43,15 +53,16 @@ class CaptureRegion:
 
 @dataclass(slots=True)
 class AppConfig:
-    hotkey: str = "Ctrl+Alt+T"
+    hotkey: str = DEFAULT_HOTKEY
+    clear_hotkey: str = DEFAULT_CLEAR_HOTKEY
     translation_provider: TranslationProvider = TranslationProvider.OPENAI_COMPATIBLE
-    api_base_url: str = ""
+    api_base_url: str = DEFAULT_OPENAI_BASE_URL
     api_key: str = ""
-    model: str = ""
-    timeout_sec: int = 30
-    log_level: str = "INFO"
-    source_lang: str = "auto"
-    target_lang: str = "zh-CN"
+    model: str = DEFAULT_OPENAI_MODEL
+    timeout_sec: int = DEFAULT_TIMEOUT_SEC
+    log_level: str = DEFAULT_LOG_LEVEL
+    source_lang: str = DEFAULT_SOURCE_LANG
+    target_lang: str = DEFAULT_TARGET_LANG
     capture_region: CaptureRegion | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -66,16 +77,24 @@ class AppConfig:
     def from_dict(cls, payload: dict[str, object]) -> "AppConfig":
         provider = payload.get("translation_provider", TranslationProvider.OPENAI_COMPATIBLE.value)
         capture_region_payload = payload.get("capture_region")
+        try:
+            translation_provider = TranslationProvider(str(provider))
+        except ValueError:
+            translation_provider = TranslationProvider.OPENAI_COMPATIBLE
         return cls(
-            hotkey=str(payload.get("hotkey", cls.hotkey)),
-            translation_provider=TranslationProvider(str(provider)),
-            api_base_url=str(payload.get("api_base_url", "")),
-            api_key=str(payload.get("api_key", "")),
-            model=str(payload.get("model", "")),
-            timeout_sec=int(payload.get("timeout_sec", 30)),
-            log_level=str(payload.get("log_level", "INFO")),
-            source_lang=str(payload.get("source_lang", "auto")),
-            target_lang=str(payload.get("target_lang", "zh-CN")),
+            hotkey=_sanitize_saved_string(payload.get("hotkey"), DEFAULT_HOTKEY),
+            clear_hotkey=_sanitize_saved_string(payload.get("clear_hotkey"), DEFAULT_CLEAR_HOTKEY),
+            translation_provider=translation_provider,
+            api_base_url=_sanitize_saved_string(
+                payload.get("api_base_url"),
+                DEFAULT_OPENAI_BASE_URL,
+            ),
+            api_key=_sanitize_saved_string(payload.get("api_key"), ""),
+            model=_sanitize_saved_string(payload.get("model"), DEFAULT_OPENAI_MODEL),
+            timeout_sec=_coerce_int(payload.get("timeout_sec"), DEFAULT_TIMEOUT_SEC),
+            log_level=_sanitize_saved_string(payload.get("log_level"), DEFAULT_LOG_LEVEL),
+            source_lang=_sanitize_saved_string(payload.get("source_lang"), DEFAULT_SOURCE_LANG),
+            target_lang=_sanitize_saved_string(payload.get("target_lang"), DEFAULT_TARGET_LANG),
             capture_region=(
                 CaptureRegion.from_dict(capture_region_payload)
                 if isinstance(capture_region_payload, dict)
@@ -118,3 +137,19 @@ class TranslationResult:
     translated_text: str
     provider: str
     latency_ms: int
+
+
+def _sanitize_saved_string(value: object, default: str) -> str:
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text or text.startswith("<member '"):
+        return default
+    return text
+
+
+def _coerce_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

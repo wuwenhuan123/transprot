@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from transprot.core.job_guard import JobGuard
-from transprot.core.models import CaptureRegion, OCRResult
+from transprot.core.models import AppConfig, CaptureRegion, OCRResult, TranslationResult
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,8 @@ class OCRCoordinator(QObject):
     capture_started = Signal(object)
     recognition_started = Signal(object)
     ocr_ready = Signal(object, object)
+    translation_streamed = Signal(object, object, str)
+    translation_ready = Signal(object, object, object)
     error_occurred = Signal(str)
     status_changed = Signal(str)
     session_finished = Signal()
@@ -29,11 +32,15 @@ class OCRCoordinator(QObject):
         self,
         screenshot_service,
         ocr_service,
+        translator_router=None,
+        config_supplier: Callable[[], AppConfig] | None = None,
         capture_delay_ms: int = 100,
     ) -> None:
         super().__init__()
         self._screenshot_service = screenshot_service
         self._ocr_service = ocr_service
+        self._translator_router = translator_router
+        self._config_supplier = config_supplier
         self._capture_delay_ms = capture_delay_ms
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="transprot-ocr")
         self._job_guard = JobGuard()
@@ -84,7 +91,7 @@ class OCRCoordinator(QObject):
         future = self._executor.submit(self._run_ocr, region, image_path)
         future.add_done_callback(
             lambda item: self._bridge.payload_ready.emit(
-                self._pack_future(item, job_id, region, kind="pipeline")
+                self._pack_future(item, job_id, region, kind="ocr")
             )
         )
 
@@ -95,6 +102,42 @@ class OCRCoordinator(QObject):
         return {
             "region": region,
             "ocr_result": ocr_result,
+        }
+
+    def _run_translation(self, job_id: int, region: CaptureRegion, ocr_result: OCRResult) -> dict[str, Any]:
+        if self._translator_router is None or self._config_supplier is None:
+            return {
+                "region": region,
+                "ocr_result": ocr_result,
+                "translation_result": None,
+            }
+
+        config = self._config_supplier()
+
+        def handle_progress(partial_text: str) -> None:
+            self._bridge.payload_ready.emit(
+                {
+                    "kind": "translation_progress",
+                    "job_id": job_id,
+                    "region": region,
+                    "result": {
+                        "region": region,
+                        "ocr_result": ocr_result,
+                        "partial_text": partial_text,
+                    },
+                    "error": None,
+                }
+            )
+
+        translation_result = self._translator_router.translate(
+            ocr_result.full_text,
+            config,
+            progress_callback=handle_progress,
+        )
+        return {
+            "region": region,
+            "ocr_result": ocr_result,
+            "translation_result": translation_result,
         }
 
     def _pack_future(
@@ -128,7 +171,31 @@ class OCRCoordinator(QObject):
 
         result = payload["result"]
         region = result["region"]
-        ocr_result: OCRResult = result["ocr_result"]
-        self.ocr_ready.emit(region, ocr_result)
-        self.status_changed.emit("completed")
-        self.session_finished.emit()
+
+        if payload["kind"] == "ocr":
+            ocr_result: OCRResult = result["ocr_result"]
+            self.ocr_ready.emit(region, ocr_result)
+            if self._translator_router is None or self._config_supplier is None:
+                self.status_changed.emit("completed")
+                self.session_finished.emit()
+                return
+            self.status_changed.emit("translating")
+            future = self._executor.submit(self._run_translation, job_id, region, ocr_result)
+            future.add_done_callback(
+                lambda item: self._bridge.payload_ready.emit(
+                    self._pack_future(item, job_id, region, kind="translation")
+                )
+            )
+            return
+
+        if payload["kind"] == "translation_progress":
+            self.translation_streamed.emit(region, result["ocr_result"], result["partial_text"])
+            return
+
+        if payload["kind"] == "translation":
+            ocr_result = result["ocr_result"]
+            translation_result: TranslationResult | None = result["translation_result"]
+            if translation_result is not None:
+                self.translation_ready.emit(region, ocr_result, translation_result)
+            self.status_changed.emit("completed")
+            self.session_finished.emit()

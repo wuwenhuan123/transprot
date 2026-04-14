@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -35,7 +35,7 @@ class AppConfigStore:
     def load(self) -> AppConfig:
         if not self._config_path.exists():
             return AppConfig()
-        raw = json.loads(self._config_path.read_text(encoding="utf-8"))
+        raw = json.loads(self._config_path.read_text(encoding="utf-8-sig"))
         return AppConfig.from_dict(raw)
 
     def save(self, config: AppConfig) -> None:
@@ -44,4 +44,3 @@ class AppConfigStore:
             json.dumps(config.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-

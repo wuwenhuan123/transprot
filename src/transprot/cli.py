@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import importlib.util
 import json
@@ -24,6 +24,7 @@ def run_self_check() -> None:
         "dependencies": _dependency_state(),
         "provider": config.translation_provider.value,
         "hotkey": config.hotkey,
+        "clear_hotkey": config.clear_hotkey,
         "api_base_url": config.api_base_url,
         "model": config.model,
     }

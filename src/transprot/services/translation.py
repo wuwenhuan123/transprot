@@ -1,27 +1,29 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from transprot.core.errors import ConfigurationError, TranslationError
 from transprot.core.models import AppConfig, TranslationProvider, TranslationResult
 from transprot.core.text import normalize_translation_text
 
+ProgressCallback = Callable[[str], None]
+
 
 def build_translation_prompt(text: str, target_lang: str) -> list[dict[str, str]]:
-    system_prompt = (
-        "You are a screen translation assistant. "
-        f"Detect the source language and translate the content into {target_lang}. "
-        "Return translated text only. Do not explain. Preserve paragraph, list, and line breaks when possible."
+    user_prompt = (
+        "你是屏幕翻译助手。"
+        f"请自动识别原文语言，并把内容翻译成 {target_lang}。"
+        "可以纠正少量 OCR 造成的空格、断句和换行噪声。"
+        "只返回译文，不要解释，尽量保留段落、列表和换行。\n\n"
+        "原文：\n"
+        f"{text}"
     )
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": text},
-    ]
+    return [{"role": "user", "content": user_prompt}]
 
 
 def _post_json(
@@ -46,22 +48,107 @@ def _post_json(
             with urllib.request.urlopen(request, timeout=timeout_sec) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            last_error = exc
+            last_error = TranslationError(_http_error_message(exc))
             if index == attempts - 1 or exc.code < 500:
                 break
         except urllib.error.URLError as exc:
-            last_error = exc
+            last_error = TranslationError(f"翻译请求失败：{exc.reason}")
             if index == attempts - 1:
                 break
         time.sleep(0.8)
 
-    raise TranslationError(f"Translation request failed: {last_error}")
+    raise TranslationError(str(last_error or "翻译请求失败。"))
+
+
+def _stream_json_events(
+    url: str,
+    payload: Mapping[str, Any],
+    timeout_sec: int,
+    headers: Mapping[str, str] | None = None,
+    retry_once: bool = True,
+):
+    final_headers = {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        **(headers or {}),
+    }
+    request = urllib.request.Request(
+        url=url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=final_headers,
+        method="POST",
+    )
+
+    attempts = 2 if retry_once else 1
+    last_error: Exception | None = None
+    for index in range(attempts):
+        yielded_any = False
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if not data:
+                        continue
+                    if data == "[DONE]":
+                        return
+                    payload_item = json.loads(data)
+                    error_message = _payload_error_message(payload_item)
+                    if error_message:
+                        raise TranslationError(error_message)
+                    yielded_any = True
+                    yield payload_item
+                return
+        except urllib.error.HTTPError as exc:
+            last_error = TranslationError(_http_error_message(exc))
+            if yielded_any or index == attempts - 1 or exc.code < 500:
+                break
+        except urllib.error.URLError as exc:
+            last_error = TranslationError(f"翻译请求失败：{exc.reason}")
+            if yielded_any or index == attempts - 1:
+                break
+        except TranslationError as exc:
+            last_error = exc
+            break
+        time.sleep(0.8)
+
+    raise TranslationError(str(last_error or "翻译请求失败。"))
+
+
+def _http_error_message(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = exc.read().decode("utf-8")
+    except Exception:
+        body = ""
+    if body:
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            message = _payload_error_message(payload)
+            if message:
+                return message
+    return f"翻译请求失败：HTTP {exc.code}"
+
+
+def _payload_error_message(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return f"翻译请求失败：{message.strip()}"
+    return None
 
 
 def _normalize_openai_url(base_url: str) -> str:
     cleaned = base_url.strip().rstrip("/")
     if not cleaned:
-        raise ConfigurationError("API base URL is required.")
+        raise ConfigurationError("请先填写接口地址。")
     if cleaned.endswith("/chat/completions"):
         return cleaned
     if cleaned.endswith("/v1"):
@@ -74,17 +161,40 @@ def _extract_openai_text(payload: dict[str, Any]) -> str:
     if isinstance(choices, list) and choices:
         message = choices[0].get("message", {})
         if isinstance(message, dict):
-            content = message.get("content", "")
-            if isinstance(content, list):
-                chunks = [item.get("text", "") for item in content if isinstance(item, dict)]
-                return normalize_translation_text("".join(chunks))
-            return normalize_translation_text(str(content))
+            return normalize_translation_text(_coerce_content_to_text(message.get("content", "")))
 
     output_text = payload.get("output_text")
     if isinstance(output_text, str):
         return normalize_translation_text(output_text)
 
-    raise TranslationError("No translated text found in OpenAI-compatible response.")
+    raise TranslationError("翻译接口没有返回可用的译文。")
+
+
+def _extract_openai_stream_text(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0]
+        if isinstance(choice, dict):
+            delta = choice.get("delta") or choice.get("message") or {}
+            if isinstance(delta, dict):
+                return _coerce_content_to_text(delta.get("content", ""))
+    return ""
+
+
+def _coerce_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "".join(chunks)
+    if content is None:
+        return ""
+    return str(content)
 
 
 def _walk_for_text(payload: Any) -> str | None:
@@ -109,35 +219,66 @@ def _walk_for_text(payload: Any) -> str | None:
 class BaseTranslator:
     provider_name = "base"
 
-    def translate(self, text: str, config: AppConfig) -> TranslationResult:
+    def translate(
+        self,
+        text: str,
+        config: AppConfig,
+        progress_callback: ProgressCallback | None = None,
+    ) -> TranslationResult:
         raise NotImplementedError
 
 
 class OpenAICompatibleTranslator(BaseTranslator):
     provider_name = TranslationProvider.OPENAI_COMPATIBLE.value
 
-    def translate(self, text: str, config: AppConfig) -> TranslationResult:
+    def translate(
+        self,
+        text: str,
+        config: AppConfig,
+        progress_callback: ProgressCallback | None = None,
+    ) -> TranslationResult:
         if not config.model:
-            raise ConfigurationError("Model is required for OpenAI-compatible translation.")
+            raise ConfigurationError("请先填写模型名称。")
 
         start = time.perf_counter()
+        headers = {}
+        if config.api_key:
+            headers["Authorization"] = f"Bearer {config.api_key}"
+        url = _normalize_openai_url(config.api_base_url)
         payload = {
             "model": config.model,
             "messages": build_translation_prompt(text, config.target_lang),
             "temperature": 0,
-            "stream": False,
+            "stream": bool(progress_callback),
         }
-        headers = {}
-        if config.api_key:
-            headers["Authorization"] = f"Bearer {config.api_key}"
-        response = _post_json(
-            url=_normalize_openai_url(config.api_base_url),
-            payload=payload,
-            timeout_sec=config.timeout_sec,
-            headers=headers,
-            retry_once=True,
-        )
-        translated = _extract_openai_text(response)
+
+        if progress_callback is None:
+            response = _post_json(
+                url=url,
+                payload=payload,
+                timeout_sec=config.timeout_sec,
+                headers=headers,
+                retry_once=True,
+            )
+            translated = _extract_openai_text(response)
+        else:
+            parts: list[str] = []
+            for event in _stream_json_events(
+                url=url,
+                payload=payload,
+                timeout_sec=config.timeout_sec,
+                headers=headers,
+                retry_once=True,
+            ):
+                chunk = _extract_openai_stream_text(event)
+                if not chunk:
+                    continue
+                parts.append(chunk)
+                progress_callback(normalize_translation_text("".join(parts)))
+            translated = normalize_translation_text("".join(parts))
+            if not translated:
+                raise TranslationError("翻译接口没有返回可用的译文。")
+
         elapsed = int((time.perf_counter() - start) * 1000)
         return TranslationResult(
             source_text=text,
@@ -150,9 +291,14 @@ class OpenAICompatibleTranslator(BaseTranslator):
 class BasicHttpTranslator(BaseTranslator):
     provider_name = TranslationProvider.BASIC_HTTP.value
 
-    def translate(self, text: str, config: AppConfig) -> TranslationResult:
+    def translate(
+        self,
+        text: str,
+        config: AppConfig,
+        progress_callback: ProgressCallback | None = None,
+    ) -> TranslationResult:
         if not config.api_base_url.strip():
-            raise ConfigurationError("API endpoint is required for basic translation mode.")
+            raise ConfigurationError("请先填写通用翻译接口地址。")
 
         start = time.perf_counter()
         headers = {}
@@ -174,11 +320,14 @@ class BasicHttpTranslator(BaseTranslator):
         )
         translated = _walk_for_text(response)
         if not translated:
-            raise TranslationError("No translated text found in basic API response.")
+            raise TranslationError("通用翻译接口没有返回可用的译文。")
+        translated = normalize_translation_text(translated)
+        if progress_callback is not None:
+            progress_callback(translated)
         elapsed = int((time.perf_counter() - start) * 1000)
         return TranslationResult(
             source_text=text,
-            translated_text=normalize_translation_text(translated),
+            translated_text=translated,
             provider=self.provider_name,
             latency_ms=elapsed,
         )
@@ -191,9 +340,14 @@ class TranslatorRouter:
             TranslationProvider.BASIC_HTTP: BasicHttpTranslator(),
         }
 
-    def translate(self, text: str, config: AppConfig) -> TranslationResult:
+    def translate(
+        self,
+        text: str,
+        config: AppConfig,
+        progress_callback: ProgressCallback | None = None,
+    ) -> TranslationResult:
         translator = self._translators[config.translation_provider]
-        return translator.translate(text, config)
+        return translator.translate(text, config, progress_callback=progress_callback)
 
     def smoke_test(self, config: AppConfig) -> TranslationResult:
         return self.translate("Hello world", config)
